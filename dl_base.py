@@ -29,19 +29,21 @@ import pandas as pd
 import torch.distributed as dist
 import datetime
 import os.path
-import numba as nb
+#import numba as nb
 try:
     import xfc_gemm_cuda
+    
 except ModuleNotFoundError:
     # Error handling
     # needed only for custom-cuda
     pass
 
+
 #from plasma_utils import *
 def noop(func):
     return func
 profile = noop
-
+'''
 @nb.njit(cache=True)
 def _recall(true_labels_indices, true_labels_indptr, pred_labels_data, pred_labels_indices, pred_labels_indptr, top_k):
     fracs = []
@@ -57,7 +59,7 @@ def _recall(true_labels_indices, true_labels_indptr, pred_labels_data, pred_labe
 def new_recall(true_labels, pred_labels, top_k):
     return _recall(true_labels.indices.astype(np.int64), true_labels.indptr,
     pred_labels.data, pred_labels.indices.astype(np.int64), pred_labels.indptr, top_k)
-
+'''
 
 def printacc(score_mat, K = 5, X_Y = None, disp = True, inv_prop_ = None):
     if X_Y is None: X_Y = tst_X_Y
@@ -91,6 +93,8 @@ def bert_fts_batch_to_tensor(input_ids, attention_mask):
     maxlen = attention_mask.sum(axis=1).max()
     return {'input_ids': torch.from_numpy(input_ids[:, :maxlen]), 
             'attention_mask': torch.from_numpy(attention_mask[:, :maxlen])}
+    #return {'input_ids': torch.from_numpy(input_ids), 
+    #        'attention_mask': torch.from_numpy(attention_mask)}
 
 def csr_to_pad_tensor(spmat, pad):
     maxlen = spmat.getnnz(1).max()
@@ -189,6 +193,8 @@ class TransformerInputLayer(nn.Module):
         super(TransformerInputLayer, self).__init__()
         self.transformer = transformer
         self.pooler = self.create_pooler(pooler_type)
+        if pooler_type == 'concat':
+          self.layer_weights = nn.Parameter(torch.tensor([1] * (4), dtype=torch.float))
 
     @profile
     def forward(self, data):
@@ -217,6 +223,46 @@ class TransformerInputLayer(nn.Module):
 
                 return sum_hidden_state / sum_mask
             return f
+        elif pooler_type == 'concat':
+            def f(tf_output, batch_data):
+                all_hidden_states = torch.stack(tf_output['hidden_states']) # e.g. torch.Size([7, 512, 32, 768])
+                all_layer_embedding = all_hidden_states[0:, :, :, :]
+                input_mask_expanded = batch_data['attention_mask'].unsqueeze(0).unsqueeze(-1).expand(all_layer_embedding.size()).float()
+                sum_hidden_state = torch.sum(all_layer_embedding * input_mask_expanded, 2)
+                sum_mask = input_mask_expanded.sum(2)
+                sum_mask = torch.clamp(sum_mask, min=1e-9)
+                all_layer_embedding_mean = sum_hidden_state/sum_mask
+
+                weight_factor = self.layer_weights.unsqueeze(-1).unsqueeze(-1).expand(all_layer_embedding_mean.size())
+                weighted_average = (weight_factor*all_layer_embedding_mean).sum(dim=0) / self.layer_weights.sum()
+                #print(all_layer_embedding.shape,all_layer_embedding_mean.shape,weighted_average.shape,flush=True)
+                return weighted_average
+            return f
+        elif pooler_type == 'concatold2':
+            def f(tf_output, batch_data):
+                last_hidden_state = tf_output['last_hidden_state']
+                input_mask_expanded = batch_data['attention_mask'].unsqueeze(-1).expand(last_hidden_state.size()).float()
+                sum_hidden_state = torch.sum(last_hidden_state * input_mask_expanded, 1)
+
+                sum_mask = input_mask_expanded.sum(1)
+                sum_mask = torch.clamp(sum_mask, min=1e-9)
+
+                mean_emb = sum_hidden_state / sum_mask
+
+                last_hidden_state[input_mask_expanded == 0] = -1e9  # Set padding tokens to large negative value
+                max_emb = torch.max(last_hidden_state, 1)[0]
+                return torch.cat((mean_emb,max_emb),1)
+
+            return f
+        elif pooler_type == 'concatold':
+            def f(tf_output, batch_data):
+                last_hidden_state = tf_output['last_hidden_state']
+                input_mask_expanded = batch_data['attention_mask'].unsqueeze(-1).expand(last_hidden_state.size()).float()
+                last_hidden_state_masked = last_hidden_state * input_mask_expanded
+                last_hidden_state_masked_expanded = last_hidden_state_masked.view(last_hidden_state_masked.size(0),-1)
+                return last_hidden_state_masked_expanded
+            return f
+
 from torch.optim.lr_scheduler import LambdaLR
 def get_linear_schedule_with_warmup_explore(optimizer, num_warmup_steps, num_explore_steps, num_training_steps, last_epoch=-1):
     """ Create a schedule with a learning rate that decreases linearly after
@@ -234,6 +280,7 @@ def get_linear_schedule_with_warmup_explore(optimizer, num_warmup_steps, num_exp
 
     return LambdaLR(optimizer, lr_lambda, last_epoch)
 
+LOSS_SAMPLE_FREQ = 100 
 
 class GenericModel(nn.Sequential):
     def __init__(self, rank, args, numy, numy_per_gpu, per_gpu_batch_size, modules: Iterable[nn.Module] = None,  device: str = None, name: str = 'generic_model', out_dir: str = None, encoder_offset: int = 1, encoder_normalize: bool = False):
@@ -264,7 +311,7 @@ class GenericModel(nn.Sequential):
         self.default_impl = args.default_impl
         self.freeze_epoch = args.freeze_epoch
         self.default_loss = nn.BCEWithLogitsLoss(reduction='sum')
-
+        self.count = 0
         # early explicit allocation for large variables to avoid OOM due to mem allocator fragmentation
         # doesn't work with autocast 
         if not self.default_impl:
@@ -341,7 +388,7 @@ class GenericModel(nn.Sequential):
 
         loss_model.to(self._target_device)
 
-        count = 0
+        self.count = 0
         steps_per_epoch = len(dataloader)
         num_train_steps = int(steps_per_epoch * epochs)
         num_freeze_steps = int(steps_per_epoch * self.freeze_epoch)
@@ -400,7 +447,7 @@ class GenericModel(nn.Sequential):
                         break
                     for name,pm in module.named_parameters():
                         pm.requires_grad = False
-
+            grad_accum = 0
             for _ in trange(steps_per_epoch, desc="Iteration", smoothing=0.05, disable=(self.rank != 0)):
                 try:
                     batch_data = next(data_iterator)
@@ -411,6 +458,8 @@ class GenericModel(nn.Sequential):
 
                 # Unoptimized Implementation -- easier to modify for experimentation since autograd handles backward but perf is 10X worse than optimized version
                 if self.default_impl: 
+                    #with torch.cuda.amp.autocast(enabled=self.fp16encoder):
+                    grad_accum += 1
                     embed = loss_model(batch_data) 
                     embed_out = loss_model.gather_embed(embed, batch_data)
                     bsz = batch_data['batch_size']
@@ -419,15 +468,17 @@ class GenericModel(nn.Sequential):
                     loss = self.default_loss(out, batch_data['yfull'])
                     loss.backward()
                     total_loss += loss/(bsz*self.padded_numy)                       
-                    self.xfc_optimizer.step()
-                    self.xfc_optimizer.zero_grad()
-                    self.tf_optimizer.step()
-                    self.tf_optimizer.zero_grad()
-                    self.xfc_scheduler.step()
-                    self.tf_scheduler.step()
-                    if self.norm:
+                    if grad_accum % 1 == 0:
+                     grad_accum = 0
+                     self.xfc_optimizer.step()
+                     self.xfc_optimizer.zero_grad()
+                     self.tf_optimizer.step()
+                     self.tf_optimizer.zero_grad()
+                     self.xfc_scheduler.step()
+                     self.tf_scheduler.step()
+                     if self.norm:
                         self.xfc_weight.data *= 1.0/torch.norm(self.xfc_weight.data,dim=1,keepdim=True)
-                    training_steps += 1
+                     training_steps += 1
                     continue
 
                 # Optimized Implementation 
@@ -443,10 +494,12 @@ class GenericModel(nn.Sequential):
                     pos_x_y = batch_data['z']
                     loss = 0.0
                     if self.accum == 1:
+                        do_forward = not self.custom_cuda or (bsz % 8 != 0) or ((self.count % LOSS_SAMPLE_FREQ == 0) and self.compute_loss)
                         # Do xfc forward-backward 
-                        if (not (self.custom_cuda and bsz%8 == 0)):
+                        #if (not (self.custom_cuda and bsz%8 == 0)):
+                        if do_forward:
                           loss_model.xfc_forward(embed_out, self.outsoft[0:bsz,:])
-                        loss += loss_model.xfc_backward(embed_out, self.outsoft[0:bsz,:], pos_x_y[0], pos_x_y[1], self.grad_input[0:bsz,:], (self.custom_cuda and bsz%8 == 0)) 
+                        loss += loss_model.xfc_backward(embed_out, self.outsoft[0:bsz,:], pos_x_y[0], pos_x_y[1], self.grad_input[0:bsz,:], not do_forward) 
                     else:
                         # Do xfc forward-backward xfcz at a time, accummulating gradients
                         start_xfcz = 0
@@ -458,12 +511,14 @@ class GenericModel(nn.Sequential):
                         while (end_xfcz <= bsz):
                           #print(bsz, i, start_xfcz, end_xfcz, index[i], index[i+1], flush=True)
                           embed_out_xfcz = embed_out[start_xfcz:end_xfcz,:]
-                          if (not (self.custom_cuda and (end_xfcz-start_xfcz)%8 == 0)):
+                          do_forward = not self.custom_cuda or ((end_xfcz-start_xfcz)%8 != 0) or ((self.count % LOSS_SAMPLE_FREQ == 0) and self.compute_loss)
+                          #if (not (self.custom_cuda and (end_xfcz-start_xfcz)%8 == 0)):
+                          if do_forward:
                             loss_model.xfc_forward(embed_out_xfcz, self.outsoft[0:end_xfcz-start_xfcz,:])
                           loss += loss_model.xfc_backward(embed_out_xfcz, self.outsoft[0:end_xfcz-start_xfcz,:],
                                                      pos_x_y[0,index[i]:index[i+1]],
                                                      pos_x_y[1,index[i]:index[i+1]],
-                                                     self.grad_input[start_xfcz:end_xfcz,:], (self.custom_cuda and (end_xfcz-start_xfcz)%8 == 0))
+                                                     self.grad_input[start_xfcz:end_xfcz,:], not do_forward) #(self.custom_cuda and (end_xfcz-start_xfcz)%8 == 0))
                           i += 1
                           start_xfcz = end_xfcz
                           end_xfcz += self.xfc_batch_size
@@ -495,9 +550,11 @@ class GenericModel(nn.Sequential):
 
                 if self.freeze_epoch < 0 or self.freeze_epoch > epoch:
                   embed.backward(self.grad_input[startbs:endbs,:])
-
-                loss /= (bsz*self.padded_numy)
-                total_loss += loss                       
+                if self.compute_loss and self.count % LOSS_SAMPLE_FREQ == 0:
+                  loss /= (bsz*self.padded_numy)
+                  total_loss += loss                       
+                  training_steps += 1
+                self.count += 1
                 ''' 
                 if count % 100 == 0 and self.rank == 0:
                   print(loss.item()," Total loss: ", total_loss.item(), " Scale: ", self.scaler.get_scale())
@@ -518,10 +575,13 @@ class GenericModel(nn.Sequential):
                 self.xfc_scheduler.step()
                 self.tf_scheduler.step()
 
-                training_steps += 1
+                #training_steps += 1
                 del batch_data
             
-            mean_loss = total_loss.item()/training_steps
+            if self.compute_loss:
+              mean_loss = total_loss.item()/training_steps
+            else:
+              mean_loss = 0.0
             if self.rank == 0:
                 print(f'mean loss after epoch {epoch} : {"%.4E"%(mean_loss)}')
                 print("Scale: ",self.scaler.get_scale())
@@ -645,6 +705,7 @@ class BCELossMultiNodeDefault(nn.Module):
         return embed
 
     def gather_embed(self, embed, batch_data):
+      if self.model.world_size > 1:
         # all-gather embeddings to model-parallel gpus
         self.global_batch_size = batch_data['batch_size']
         self.remainder = self.global_batch_size % self.model.world_size
@@ -666,6 +727,8 @@ class BCELossMultiNodeDefault(nn.Module):
             all_gather(self.model.gather_list, embed) 
             embed_out = torch.cat(self.model.gather_list, dim=0)
         return embed_out
+      else:
+        return embed
 
     def xfc_forward(self, embed):
         # run fully-connected layer in model-parallel manner
@@ -684,6 +747,7 @@ class BCELossMultiNode(nn.Module):
         return embed
 
     def gather_embed(self, embed, batch_data):
+      if self.model.world_size > 1:
         # all-gather embeddings to model-parallel gpus
         self.global_batch_size = batch_data['batch_size']
         self.remainder = self.global_batch_size % self.model.world_size
@@ -704,15 +768,18 @@ class BCELossMultiNode(nn.Module):
         else:
             dist.all_gather(self.model.gather_list, embed) 
             embed_out = torch.cat(self.model.gather_list, dim=0)
-        if self.model.fp16xfc: # do fp16 conversions once
+      else:
+        embed_out = embed
+
+      if self.model.fp16xfc: # do fp16 conversions once
             embed_out = embed_out.to(torch.float16)  
             self.xfc_weight = self.model.xfc_weight.to(torch.float16)
             if self.model.xfc_bias is not None:
                 self.xfc_bias = self.model.xfc_bias.to(torch.float16)
-        else:
+      else:
             self.xfc_weight = self.model.xfc_weight  
             self.xfc_bias = self.model.xfc_bias
-        return embed_out
+      return embed_out
 
     def xfc_forward(self, embed, out):
         # run fully-connected layer in model-parallel manner
@@ -726,7 +793,7 @@ class BCELossMultiNode(nn.Module):
 
     def xfc_backward(self, embed_out, out, pos_x, pos_y, grad_input, use_custom):         
         # Compute loss, do backward pass
-        if self.model.compute_loss:
+        if self.model.compute_loss and self.model.count % LOSS_SAMPLE_FREQ == 0:
           self.loss = out.clamp(min=0.0).sum(dtype=torch.float32) 
           self.loss -= out[pos_x,pos_y].sum(dtype=torch.float32) 
         
@@ -734,7 +801,8 @@ class BCELossMultiNode(nn.Module):
           self.loss += (1+(-torch.abs(out.float())).exp()).log().sum(dtype=torch.float32)
 
           # async all_reduce on loss to get global loss across model_parallel workers
-          loss_work = dist.all_reduce(self.loss, dist.ReduceOp.SUM, async_op=True)
+          if self.model.world_size > 1:
+            loss_work = dist.all_reduce(self.loss, dist.ReduceOp.SUM, async_op=True)
 
         # loss backward
         if use_custom:
@@ -757,12 +825,14 @@ class BCELossMultiNode(nn.Module):
         else:
           torch.addmm(self.model.dummy,out,self.xfc_weight,beta=0,alpha=self.scale_bwd,out=grad_input)
 
-        if self.model.compute_loss:
-          loss_work.wait() # get global loss
+        if self.model.compute_loss and self.model.count % LOSS_SAMPLE_FREQ == 0:
+          if self.model.world_size > 1:
+            loss_work.wait() # get global loss
         # print(loss)
 
-        # async all-reduce grad_input from all GPUs: TODO: reduce_scatter is sufficient
-        work = dist.all_reduce(grad_input, dist.ReduceOp.SUM, async_op=True)
+        if self.model.world_size > 1:
+          # async all-reduce grad_input from all GPUs: TODO: reduce_scatter is sufficient
+          work = dist.all_reduce(grad_input, dist.ReduceOp.SUM, async_op=True)
 
         # matmul for computing gradient w.r.t weights
         if self.model.xfc_weight.grad is None:
@@ -786,8 +856,10 @@ class BCELossMultiNode(nn.Module):
                 self.model.xfc_bias.grad = out.sum(0).to(torch.float32)
             else:
                 self.model.xfc_bias.grad += out.sum(0).to(torch.float32)
-        # wait for grad_input
-        work.wait() 
+
+        if self.model.world_size > 1:
+          # wait for grad_input
+          work.wait() 
 
         # print('loss =',loss.item()) 
         return self.loss
@@ -816,6 +888,7 @@ class BCELoss(nn.Module):
     def xfc_forward(self, embed, out):
         torch.matmul(embed, self.xfc_weight.t(), out=out)
         return
+
 
     def xfc_backward(self, embed_out, out, pos_x, pos_y, grad_input, use_custom):  #use_custom not supported yet TBD
         if self.model.compute_loss:
@@ -929,7 +1002,7 @@ class FullPredictor():
                         top_inds = torch.gather(top_inds_aggr, 1, top_inds_temp)
                         #print(top_data_final[0],top_inds_final[0])
                     else:
-                        top_inds[top_inds>=model.numy] = model.numy-1 # remove padded labels
+                        top_inds[top_inds>=model.numy] = model.numy-1 # remove padded label
 
 
                     if model.rank == 0:
@@ -965,6 +1038,7 @@ class PrecEvaluator():
 
     def __call__(self, loss_model, epoch: int = -1, loss: float = -1.0, out_dir: str = None, name: str = ''):
         if self.model.rank == 0:
+          print(self.dataloader.dataset.labels[0].shape,flush=True)
           print(f'Evaluating {name} {["after epoch %d: "%epoch, ": "][name == ""]}', flush=True)
         #self.predictor.K = max(self.predictor.K, 100)
         if (epoch < 0) or (epoch == self.model.epochs - 1):
@@ -974,15 +1048,17 @@ class PrecEvaluator():
         score_mat = self.predictor(loss_model, self.model, self.dataloader)
 
         if self.model.rank == 0:
+          print(score_mat.shape,flush=True)
           if out_dir is not None:
             score_out_file = f'{out_dir}/{[name+"_", ""][name == ""]}score_mat.npz'
             save_npz(score_out_file, score_mat)
           print('Calculating accuracy in rank 0...',flush=True)
           if self.filter_mat is not None:
             _filter(score_mat, self.filter_mat, copy=False)
-          if (epoch < 0) or  (epoch == self.model.epochs - 1):
-            recall = new_recall(self.dataloader.dataset.labels[0], score_mat, top_k=100)*100
-            #recall = xc_metrics.recall(score_mat, self.dataloader.dataset.labels[0], k=100)*100
+          if ((epoch < 0) or  (epoch == self.model.epochs - 1)):
+            #recall = new_recall(self.dataloader.dataset.labels[0], score_mat, top_k=100)*100
+            recall = xc_metrics.recall(score_mat, self.dataloader.dataset.labels[0], k=100)*100
+            recall = recall[99]
             print(f'Recall@100: {"%.2f"%recall}', flush=True)
           else: # save time
             recall = 0.0
@@ -995,7 +1071,6 @@ class PrecEvaluator():
                 print('\t'.join(['epoch', 'time', 'loss', *[f'{metric}@1' for metric in res.index], *[f'{metric}@3' for metric in res.index], *[f'{metric}@{self.K}' for metric in res.index], 'R@100']), file=open(out_file, 'w'))
             with open(out_file, 'a') as f:
                 print('\t'.join([str(epoch), str(datetime.datetime.now()), str("%.4E"%loss), *["%.2f"%val for val in res['1'].values], *["%.2f"%val for val in res['3'].values], *["%.2f"%val for val in res[str(self.K)].values], "%.2f"%recall]), file=f)
-
         if self.model.rank == 0:
           score = res[str(self.K)][self.metric]
           score_tensor = torch.tensor(score, dtype=torch.float32, device=self.model._target_device)

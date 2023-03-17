@@ -9,6 +9,7 @@ import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from transformers import RobertaModel, AutoModel, AutoConfig
+from collections import OrderedDict
 #from torch.profiler import profile, record_function, ProfilerActivity
 
 def seed_worker(worker_id):
@@ -54,16 +55,22 @@ def start(device, ngpus_per_node, args):
   else:                                  # single node, single gpu training
     args.rank = my_rank = 0
 
-  root_dir = '/home/jainvidit/xc'
+#   root_dir = '/home/jainvidit/xc'
+  root_dir = '/home/t-japrakash/xc'
+  if not os.path.exists(root_dir):
+      root_dir = '/home/jainvidit/xc'
+    
+    
   results_dir = f'./Results/Bert-XC/'
   os.makedirs(results_dir, exist_ok=True)
   dataset=args.dataset
 
   device = f'cuda:{nb_id}'
-  if args.world_size > 1:
-    expname = f'BertDXML2-distributed{args.world_size}'
-  else:
-    expname = f'BertDXML2-{nb_id}'
+#   if args.world_size > 1:
+#     expname = f'BertDXML2-distributed{args.world_size}'
+#   else:
+#     expname = f'BertDXML2-{nb_id}'
+  expname = args.expname
 
   torch.cuda.set_device(device)
 
@@ -114,9 +121,12 @@ def start(device, ngpus_per_node, args):
   if 'roberta' in args.tf: tokenizer_type = 'roberta-base'
   elif 'bert' in args.tf: tokenizer_type = 'bert-base-uncased'
   elif 'custom' in args.tf: tokenizer_type = 'custom'
+  elif 'MiniLM' in args.tf: tokenizer_type = 'miniLM_L6'
   else:
       tokenizer_type = args.tf
       print("Potentially unsupported tokenizer_type ",args.tf)
+      if 'MiniLM' in args.tf:
+        tokenizer_type = 'roberta-base'
 
   padded_numy = trn_X_Y.shape[1]
   if (padded_numy % args.world_size != 0):
@@ -155,6 +165,7 @@ def start(device, ngpus_per_node, args):
       trn_X_Y_list.append(trn_X_Y[start_row:end_row].tocsc()[:,start_label:end_label].tocsr()) 
       trn_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', trn_X_Y_list, num_points, args.maxlen, doc_type='trn')
       tst_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', [tst_X_Y], tst_shape_0, args.maxlen, doc_type='tst')
+      #tst_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', [tst_X_Y], tst_shape_0, args.maxlen, doc_type='trn')
   else:
       OUT_DIR = f'{results_dir}/{dataset}'
       Y = [x.strip() for x in open(f'{DATA_DIR}/raw/Y.txt').readlines()]
@@ -188,37 +199,34 @@ def start(device, ngpus_per_node, args):
     pin_memory=False)
 
   # Pre-trained custom Transformer Input layer
-  if args.tf == "custom":
-    from transformers import BertConfig, BertModel
-    cfg = { "attention_probs_dropout_prob": 0.1, "gradient_checkpointing": False, "hidden_act": "gelu", "hidden_dropout_prob": 0.1, "hidden_size": 384, "initializer_range": 0.02, "intermediate_size": 1536, "layer_norm_eps": 1e-12, "max_position_embeddings": 512, "model_type": "bert", "num_attention_heads": 6, "num_hidden_layers": 3, "pad_token_id": 0, "position_embedding_type": "absolute", "transformers_version": "4.8.2", "type_vocab_size": 2, "use_cache": True, "vocab_size": 100000}
-    encoder  = TransformerInputLayer(BertModel(BertConfig(**cfg), add_pooling_layer=False), 'mean')
-    from collections import OrderedDict
-    new_state_dict = OrderedDict()
-    old_state_dict = torch.load("./custom_model_state_dict.pt", map_location="cpu")
-    for k, v in old_state_dict.items():
-        name = k.replace("embedding_labels.encoder.","")
-        new_state_dict[name] = v
-    print(encoder.load_state_dict(new_state_dict, strict=False))
-  elif args.tf == 'bert4':
-    from transformers import BertConfig, BertModel
-    cfg = BertConfig(vocab_size=30522, num_hidden_layers=4, num_attention_heads=12, hidden_size=768, intermediate_size=3072)
-    encoder = TransformerInputLayer(BertModel(cfg, add_pooling_layer=False), 'mean')
-  else:
-    try:
-      #encoder = TransformerInputLayer(AutoModel.from_config(AutoConfig.from_pretrained(args.tf),add_pooling_layer=False), 'mean') # randomly initialized model
-      encoder = TransformerInputLayer(AutoModel.from_pretrained(args.tf,add_pooling_layer=False), 'mean')
-    except:
-      encoder = TransformerInputLayer(AutoModel.from_pretrained(args.tf), 'mean')
+  
+  try:
+  #encoder = TransformerInputLayer(AutoModel.from_config(AutoConfig.from_pretrained(args.tf),add_pooling_layer=False), 'mean') # randomly initialized model
+      encoder_ = AutoModel.from_pretrained(args.tf,add_pooling_layer=False)
+  except:
+      encoder_ = AutoModel.from_pretrained(args.tf)
 
+    
+  # whether or not to use ngame pretrained encoder (which is M1 in the ngame paper) as initialization.
+  if args.use_ngame_encoder: 
+    path_to_ngame_model = f"/blob/ngame_pretrained_models/{args.dataset}/state_dict.pt"
+    print("Using NGAME pretrained encoder. Loading from {}".format(path_to_ngame_model))
+
+    new_state_dict = OrderedDict()
+    old_state_dict = torch.load(path_to_ngame_model, map_location="cpu")
+
+    for k, v in old_state_dict.items():
+        name = k.replace("embedding_labels.encoder.transformer.0.auto_model.", "") # for Academic datasets
+        # name = k.replace("encoder.encoder.transformer.0.auto_model.", "") # for EPM-20M
+        new_state_dict[name] = v
+
+    print(encoder_.load_state_dict(new_state_dict, strict=True))  
+  encoder = TransformerInputLayer(encoder_, 'mean')
+            
   if args.bottleneck_dims > 0:
     # modules = [encoder, nn.Dropout(args.dropout), FP32Linear(encoder.transformer.config.hidden_size, args.bottleneck_dims, bias=False)] 
     # below version works better than above
-    if args.tf == "custom" and args.bottleneck_dims == 64:
-      modules = [encoder, FP32Linear(encoder.transformer.config.hidden_size, args.bottleneck_dims, bias=True), nn.Dropout(args.dropout) ] 
-      modules[1].transformer_weight.data = old_state_dict['embedding_labels.transform.weight']
-      modules[1].transformer_bias.data = old_state_dict['embedding_labels.transform.bias']
-    else:
-      modules = [encoder, FP32Linear(encoder.transformer.config.hidden_size, args.bottleneck_dims, bias=False), nn.Dropout(args.dropout) ] 
+    modules = [encoder, FP32Linear(encoder.transformer.config.hidden_size, args.bottleneck_dims, bias=False), nn.Dropout(args.dropout) ] 
     # multiple layers doesn't help 
     # modules = [encoder, FP32Linear(encoder.transformer.config.hidden_size, 4*args.bottleneck_dims, bias=False), FP32Linear(4*args.bottleneck_dims, args.bottleneck_dims, bias=False), nn.Dropout(args.dropout) ] 
   else:
@@ -227,18 +235,29 @@ def start(device, ngpus_per_node, args):
 
   model = GenericModel(my_rank, args, trn_X_Y.shape[1], numy_per_gpu, args.batch_size, modules, device=device, name=expname, out_dir=f'{results_dir}/{dataset}/{expname}')
   model = model.cuda()
+  #model.load()
 
   if args.world_size > 1:
     if not args.nosync:
       model.embed = DDP(model.embed, device_ids=[my_rank%ngpus_per_node])
 
+  if args.default_impl:
+      trn_loss = BCELossMultiNodeDefault(model)
+  else:
+      trn_loss = BCELossMultiNode(model)
+  '''
   if args.world_size == 1:
-    trn_loss = BCELoss(model)
+    if args.default_impl:
+      trn_loss = BCELossMultiNodeDefault(model)
+    else:
+      trn_loss = BCELossMultiNode(model)
+      #trn_loss = BCELoss(model)
   else:
     if args.default_impl:
       trn_loss = BCELossMultiNodeDefault(model)
     else:
       trn_loss = BCELossMultiNode(model)
+  '''
 
   if args.init_weights:
       totlen = trn_X_Y.shape[1] #numy
@@ -258,6 +277,7 @@ def start(device, ngpus_per_node, args):
             if endlen > start+Y_len:
                 endlen=start+Y_len
             maxlen = Y_am[i:endlen].sum(axis=1).max()
+            #maxlen = args.maxlen
             batch_input = {'input_ids': torch.from_numpy(Y_ii[i:endlen, :maxlen]),
                        'attention_mask': torch.from_numpy(Y_am[i:endlen, :maxlen])}
             for key in batch_input:
@@ -278,12 +298,12 @@ def start(device, ngpus_per_node, args):
   else:
       model.fit(trn_loader, trn_loss, 
           xfc_optimizer_class = apex.optimizers.FusedSGD,
-          xfc_optimizer_params= {'lr': args.lr1, 'momentum': 0.9, 'weight_decay': args.wd1,  'set_grad_none': True},  
+          xfc_optimizer_params= {'lr': args.lr1, 'momentum': args.mo, 'weight_decay': args.wd1,  'set_grad_none': True},  
           tf_optimizer_class = apex.optimizers.FusedAdam,
           tf_optimizer_params= {'lr': args.lr2, 'eps': 1e-06, 'set_grad_none': True, 'bias_correction': True, 'weight_decay': args.wd2},
           epochs = args.epochs, warmup_steps = args.warmup, explore_steps = args.explore,
           evaluator=evaluator,
-          evaluation_epochs=200)
+          evaluation_epochs=5)
 
 def main():
     # Training settings
@@ -306,6 +326,8 @@ def main():
                         help='Freeze encoder starting from freeze-epoch (default: no-freezing) ')
     parser.add_argument('--epochs', type=int, default=50, metavar='N',
                         help='number of epochs to train (default: 50)')
+    parser.add_argument('--expname', type=str, default='debug', metavar='N',
+                        help='Name of exp')
     parser.add_argument('--device', type=int, default=None, metavar='N',
                         help='Single device training (default: None)')
     parser.add_argument('--dist-url', default='tcp://localhost:23456', type=str,
@@ -324,6 +346,8 @@ def main():
                         help='learning rate for xfc layer (default: 0.025)')
     parser.add_argument('--lr2', type=float, default=1e-5, metavar='LR',
                         help='learning rate for encoder (default: 1e-4)')
+    parser.add_argument('--mo', type=float, default=0.9, metavar='MO',
+                        help='momentum for xfc layer (default: 0.9)')
     parser.add_argument('--wd1', type=float, default=0.01, metavar='WD',
                         help='weight decay for xfc layer (default: 0.01)')
     parser.add_argument('--wd2', type=float, default=0.01, metavar='WD',
@@ -354,13 +378,12 @@ def main():
                         help='max seq length for transformer')
     parser.add_argument('--tf', type=str, default='distilbert-base-uncased', metavar='N',
                         help='encoder transformer type')
+    parser.add_argument('--use-ngame-encoder', action='store_true', default=False,
+                        help='Use NGAME pretrained encoder as initialization point for trainings')
     args = parser.parse_args()
 
     if args.bias and (args.custom_cuda or args.default_impl):
         print("XFC bias not supported yet for default_impl or custom_cuda kernels: TBD")
-        exit(-1)
-    if (not args.noloss) and args.custom_cuda:
-        print("custom_cuda requires --noloss")
         exit(-1)
     if (not args.pre_tok) and (args.tf == "custom" or args.world_size > 1 or args.slice > 1 or args.init_weights):
         print("args.tf == custom or args.world_size > 1 or args.slice > 1 or args.init_weights requires args.pre_tok for now")
@@ -368,7 +391,7 @@ def main():
         exit(-1)
 
     print(args)
-   
+ 
     if args.device is not None:
         print("Specific device chosen. Starting single device training")
         start(args.device, 1, args)
