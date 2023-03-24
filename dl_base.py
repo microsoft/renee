@@ -1,4 +1,3 @@
-from transformers import AutoTokenizer
 import time
 import pickle as pkl
 import torch
@@ -14,8 +13,6 @@ from tqdm.autonotebook import tqdm, trange
 from typing import List, Dict, Tuple, Iterable, Type, Union, Callable
 import math
 import random
-import logging
-logger = logging.getLogger(__name__)
 
 import transformers
 from torch.nn.parameter import Parameter
@@ -29,10 +26,8 @@ import pandas as pd
 import torch.distributed as dist
 import datetime
 import os.path
-#import numba as nb
 try:
     import xfc_gemm_cuda
-    
 except ModuleNotFoundError:
     # Error handling
     # needed only for custom-cuda
@@ -43,23 +38,6 @@ except ModuleNotFoundError:
 def noop(func):
     return func
 profile = noop
-'''
-@nb.njit(cache=True)
-def _recall(true_labels_indices, true_labels_indptr, pred_labels_data, pred_labels_indices, pred_labels_indptr, top_k):
-    fracs = []
-    for i in range(len(true_labels_indptr) - 1):
-        _true_labels = true_labels_indices[true_labels_indptr[i] : true_labels_indptr[i + 1]]
-        _data = pred_labels_data[pred_labels_indptr[i] : pred_labels_indptr[i + 1]]
-        _indices = pred_labels_indices[pred_labels_indptr[i] : pred_labels_indptr[i + 1]]
-        top_inds = np.argsort(_data)[::-1][:top_k]
-        _pred_labels = _indices[top_inds]
-        if(len(_true_labels) > 0):
-            fracs.append(len(set(_pred_labels).intersection(set(_true_labels))) / len(_true_labels))
-    return np.mean(np.array(fracs, dtype=np.float32))
-def new_recall(true_labels, pred_labels, top_k):
-    return _recall(true_labels.indices.astype(np.int64), true_labels.indptr,
-    pred_labels.data, pred_labels.indices.astype(np.int64), pred_labels.indptr, top_k)
-'''
 
 def printacc(score_mat, K = 5, X_Y = None, disp = True, inv_prop_ = None):
     if X_Y is None: X_Y = tst_X_Y
@@ -89,6 +67,7 @@ def _filter(score_mat, filter_mat, copy=True):
     score_mat.eliminate_zeros()
     return score_mat
 
+
 def bert_fts_batch_to_tensor(input_ids, attention_mask):
     maxlen = attention_mask.sum(axis=1).max()
     return {'input_ids': torch.from_numpy(input_ids[:, :maxlen]), 
@@ -109,21 +88,6 @@ def csr_to_pad_tensor(spmat, pad):
     ret['vals'][ptrs] = torch.Tensor(spmat.data)
     ret['vals'] = ret['vals'].reshape((spmat.shape[0], maxlen))
     return ret
-
-def get_index_values(spmat, row_index, add_one=False):
-    start = spmat.indptr[row_index]; end = spmat.indptr[row_index+1]
-    row_data = spmat.data[start:end]
-    row_indices = spmat.indices[start:end]
-    
-    if(add_one):
-        row_indices = row_indices + 1
-
-    return row_indices, row_data
-
-class Params:
-    def __init__(self):
-        pass
-
 
 class FP32Linear(nn.Module):
     def __init__(self, input_size, output_size, bias=True):
@@ -153,137 +117,34 @@ class FP32Linear(nn.Module):
         if self.transformer_bias is not None:
             self.transformer_bias.data.uniform_(-stdv, stdv)
 
-from torch.nn import Parameter
-def _weight_drop(module, weights, dropout):
-    """
-    Helper for `WeightDrop`.
-    """
-
-    for name_w in weights:
-        w = getattr(module, name_w)
-        del module._parameters[name_w]
-        module.register_parameter(name_w + '_raw', Parameter(w))
-
-    original_module_forward = module.forward
-
-    def forward(*args, **kwargs):
-        for name_w in weights:
-            raw_w = getattr(module, name_w + '_raw')
-            w = nn.Parameter(torch.nn.functional.dropout(raw_w, p=dropout, training=module.training))
-            setattr(module, name_w, w)
-
-        return original_module_forward(*args, **kwargs)
-
-    setattr(module, 'forward', forward)
-class WeightDropLinear(nn.Linear):
-    """
-    Wrapper around :class:`torch.nn.Linear` that adds ``weight_dropout`` named argument.
-
-    Args:
-        weight_dropout (float): The probability a weight will be dropped.
-    """
-
-    def __init__(self, *args, weight_dropout=0.0, **kwargs):
-        super().__init__(*args, **kwargs)
-        weights = ['weight']
-        _weight_drop(self, weights, weight_dropout)
 
 class TransformerInputLayer(nn.Module):
-    def __init__(self, transformer, pooler_type='pooler'):
+    def __init__(self, transformer, pooler_type='mean'):
         super(TransformerInputLayer, self).__init__()
         self.transformer = transformer
-        self.pooler = self.create_pooler(pooler_type)
-        if pooler_type == 'concat':
-          self.layer_weights = nn.Parameter(torch.tensor([1] * (4), dtype=torch.float))
+        self.pooler = self.create_pooler()
 
     @profile
     def forward(self, data):
-        #print("before transformer",torch.cuda.memory_summary())
-        #torch.cuda.reset_max_memory_allocated()
-        #sys.stdout.flush()
         return self.pooler(self.transformer(**data),data).contiguous()
     
-    def create_pooler(self, pooler_type: str):
-        if pooler_type == 'pooler':
-            def f(tf_output, batch_data):
-                return tf_output['pooler_output']
-            return f
-        elif pooler_type == 'cls':
-            def f(tf_output, batch_data):
-                return tf_output['last_hidden_state'][:, 0]
-            return f
-        elif pooler_type == 'mean':
-            def f(tf_output, batch_data):
-                last_hidden_state = tf_output['last_hidden_state']
-                input_mask_expanded = batch_data['attention_mask'].unsqueeze(-1).expand(last_hidden_state.size()).float()
-                sum_hidden_state = torch.sum(last_hidden_state * input_mask_expanded, 1)
+    def create_pooler(self):
+        def f(tf_output, batch_data):
+            last_hidden_state = tf_output['last_hidden_state']
+            input_mask_expanded = batch_data['attention_mask'].unsqueeze(-1).expand(last_hidden_state.size()).float()
+            sum_hidden_state = torch.sum(last_hidden_state * input_mask_expanded, 1)
 
-                sum_mask = input_mask_expanded.sum(1)
-                sum_mask = torch.clamp(sum_mask, min=1e-9)
+            sum_mask = input_mask_expanded.sum(1)
+            sum_mask = torch.clamp(sum_mask, min=1e-9)
 
-                return sum_hidden_state / sum_mask
-            return f
-        elif pooler_type == 'concat':
-            def f(tf_output, batch_data):
-                all_hidden_states = torch.stack(tf_output['hidden_states']) # e.g. torch.Size([7, 512, 32, 768])
-                all_layer_embedding = all_hidden_states[0:, :, :, :]
-                input_mask_expanded = batch_data['attention_mask'].unsqueeze(0).unsqueeze(-1).expand(all_layer_embedding.size()).float()
-                sum_hidden_state = torch.sum(all_layer_embedding * input_mask_expanded, 2)
-                sum_mask = input_mask_expanded.sum(2)
-                sum_mask = torch.clamp(sum_mask, min=1e-9)
-                all_layer_embedding_mean = sum_hidden_state/sum_mask
+            return sum_hidden_state / sum_mask
+        return f
 
-                weight_factor = self.layer_weights.unsqueeze(-1).unsqueeze(-1).expand(all_layer_embedding_mean.size())
-                weighted_average = (weight_factor*all_layer_embedding_mean).sum(dim=0) / self.layer_weights.sum()
-                #print(all_layer_embedding.shape,all_layer_embedding_mean.shape,weighted_average.shape,flush=True)
-                return weighted_average
-            return f
-        elif pooler_type == 'concatold2':
-            def f(tf_output, batch_data):
-                last_hidden_state = tf_output['last_hidden_state']
-                input_mask_expanded = batch_data['attention_mask'].unsqueeze(-1).expand(last_hidden_state.size()).float()
-                sum_hidden_state = torch.sum(last_hidden_state * input_mask_expanded, 1)
-
-                sum_mask = input_mask_expanded.sum(1)
-                sum_mask = torch.clamp(sum_mask, min=1e-9)
-
-                mean_emb = sum_hidden_state / sum_mask
-
-                last_hidden_state[input_mask_expanded == 0] = -1e9  # Set padding tokens to large negative value
-                max_emb = torch.max(last_hidden_state, 1)[0]
-                return torch.cat((mean_emb,max_emb),1)
-
-            return f
-        elif pooler_type == 'concatold':
-            def f(tf_output, batch_data):
-                last_hidden_state = tf_output['last_hidden_state']
-                input_mask_expanded = batch_data['attention_mask'].unsqueeze(-1).expand(last_hidden_state.size()).float()
-                last_hidden_state_masked = last_hidden_state * input_mask_expanded
-                last_hidden_state_masked_expanded = last_hidden_state_masked.view(last_hidden_state_masked.size(0),-1)
-                return last_hidden_state_masked_expanded
-            return f
-
-from torch.optim.lr_scheduler import LambdaLR
-def get_linear_schedule_with_warmup_explore(optimizer, num_warmup_steps, num_explore_steps, num_training_steps, last_epoch=-1):
-    """ Create a schedule with a learning rate that decreases linearly after
-    linearly increasing during a warmup period.
-    """
-
-    def lr_lambda(current_step):
-        if current_step < num_warmup_steps:
-            return float(current_step) / float(max(1, num_warmup_steps))
-        elif current_step < num_warmup_steps + num_explore_steps:
-            return 1.0
-        return max(
-            0.0, float(num_training_steps - current_step) / float(max(1, num_training_steps - num_warmup_steps - num_explore_steps))
-        )
-
-    return LambdaLR(optimizer, lr_lambda, last_epoch)
-
+        
 LOSS_SAMPLE_FREQ = 100 
 
 class GenericModel(nn.Sequential):
-    def __init__(self, rank, args, numy, numy_per_gpu, per_gpu_batch_size, modules: Iterable[nn.Module] = None,  device: str = None, name: str = 'generic_model', out_dir: str = None, encoder_offset: int = 1, encoder_normalize: bool = False):
+    def __init__(self, rank, args, numy, numy_per_gpu, per_gpu_batch_size, modules: Iterable[nn.Module] = None,  device: str = None, name: str = 'generic_model', out_dir: str = None):
         if modules is not None and not isinstance(modules, OrderedDict):
             modules = OrderedDict([(str(idx), module) for idx, module in enumerate(modules)])
         super().__init__()
@@ -303,13 +164,11 @@ class GenericModel(nn.Sequential):
         self.fp16encoder = not args.fp32encoder
         self.fp16xfc = args.fp16xfc
         self.accum = args.accum 
-        self.nosync = args.nosync
         self.compute_loss = not args.noloss
         self.checkpoint_resume = args.checkpoint_resume
         self.norm = args.norm
         self.custom_cuda = args.custom_cuda
         self.default_impl = args.default_impl
-        self.freeze_epoch = args.freeze_epoch
         self.default_loss = nn.BCEWithLogitsLoss(reduction='sum')
         self.count = 0
         # early explicit allocation for large variables to avoid OOM due to mem allocator fragmentation
@@ -327,47 +186,12 @@ class GenericModel(nn.Sequential):
         self.xfc_weight = nn.Parameter(torch.Tensor(numy_per_gpu,args.bottleneck_dims))
         #nn.init.kaiming_uniform_(self.xfc_weight, a=math.sqrt(5))
         nn.init.normal_(self.xfc_weight,mean=0.0,std=0.02) # gpt-1 paper says this is fine since layernorm is used throughout embedding
-        if args.bias:
-            self.xfc_bias = nn.Parameter(torch.Tensor(numy_per_gpu))
-            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.xfc_weight)
-            bound = 1 / math.sqrt(fan_in)
-            nn.init.uniform_(self.xfc_bias, -bound, bound)
-        else:
-            self.xfc_bias = None
-        
+      
         self._target_device = torch.device(device)
         self.name = name
         self.out_dir = out_dir
-        self.encoder_offset = encoder_offset
-        self.encoder_normalize = encoder_normalize
         os.makedirs(self.out_dir, exist_ok=True)
-        print(f"{name} on device: {device}, encoder offset: {encoder_offset}, encoder normalize: {encoder_normalize}")
-        
-    def encode(self, inp):
-        for i, module in enumerate(self):
-            if i >= len(self)-self.encoder_offset:
-                break
-            inp = module(inp)
-        if self.encoder_normalize: return F.normalize(inp)
-        else: return inp
-    
-    def get_embs(self, dataset, source='point', bsz=256):
-        if source == 'label':
-            numx = dataset.labels.shape[1]
-        elif source == 'point':
-            numx = dataset.labels.shape[0]
-            
-        embs = [] 
-        self.eval()
-        with torch.no_grad():
-            for ctr in tqdm(range(0, numx, bsz), desc=f"Embedding {source}s"):
-                batch_data = dataset.get_fts(np.array(range(ctr, min(numx, ctr+bsz))), source)
-                batch_data = self.batch_to_device(batch_data, self._target_device)
-                temp_embs = self.encode(batch_data)
-                embs.append(temp_embs.detach().cpu().numpy())
-                del temp_embs, batch_data
-        return np.vstack(embs)
-
+   
     @profile
     def fit(self,
             dataloader,
@@ -377,25 +201,20 @@ class GenericModel(nn.Sequential):
             tf_optimizer_class: Type[Optimizer],
             tf_optimizer_params : Dict[str, object],
             epochs: int = 1,
-            scheduler: str = 'warmupcosine', #'warmupexplore', #'WarmupLinear',  #'warmupcosine',
+            scheduler: str = 'warmupcosine',
             warmup_steps: int = 10000,
-            explore_steps: int = 0,
             evaluator = None,
             evaluation_epochs: int = 5,
-            max_grad_norm: float = -1,
             ):
-
 
         loss_model.to(self._target_device)
 
         self.count = 0
         steps_per_epoch = len(dataloader)
         num_train_steps = int(steps_per_epoch * epochs)
-        num_freeze_steps = int(steps_per_epoch * self.freeze_epoch)
 
         # Prepare optimizers
-        optimizer_params_xfc = []
-        optimizer_params_tf = []
+        optimizer_params_xfc,optimizer_params_tf = [], []
             
         for n, p in loss_model.named_parameters():
             if p.requires_grad:
@@ -416,11 +235,9 @@ class GenericModel(nn.Sequential):
         self.xfc_optimizer = xfc_optimizer_class(xfc_optimizer_grouped_parameters, **xfc_optimizer_params)
         self.tf_optimizer = tf_optimizer_class(tf_optimizer_grouped_parameters, **tf_optimizer_params)
         
-        self.xfc_scheduler = self._get_scheduler(self.xfc_optimizer, scheduler=scheduler, warmup_steps=warmup_steps, explore_steps=explore_steps, t_total=num_train_steps)
-        if self.freeze_epoch < 0:
-            self.tf_scheduler = self._get_scheduler(self.tf_optimizer, scheduler=scheduler, warmup_steps=warmup_steps, explore_steps=explore_steps, t_total=num_train_steps)
-        else:
-            self.tf_scheduler = self._get_scheduler(self.tf_optimizer, scheduler=scheduler, warmup_steps=warmup_steps, explore_steps=explore_steps, t_total=num_freeze_steps)
+        self.xfc_scheduler = self._get_scheduler(self.xfc_optimizer, warmup_steps=warmup_steps, t_total=num_train_steps)
+        self.tf_scheduler = self._get_scheduler(self.tf_optimizer, warmup_steps=warmup_steps, t_total=num_train_steps)
+     
 
         data_iterator = iter(dataloader)
         self.epoch = 0
@@ -441,12 +258,6 @@ class GenericModel(nn.Sequential):
             loss_model.zero_grad()
             loss_model.train()
 
-            if self.freeze_epoch >= 0 and self.freeze_epoch <= epoch:
-                for i, module in enumerate(self):
-                    if i >= len(self)-self.encoder_offset:
-                        break
-                    for name,pm in module.named_parameters():
-                        pm.requires_grad = False
             grad_accum = 0
             for _ in trange(steps_per_epoch, desc="Iteration", smoothing=0.05, disable=(self.rank != 0)):
                 try:
@@ -456,7 +267,6 @@ class GenericModel(nn.Sequential):
                     batch_data = next(data_iterator)
                 batch_data = self.batch_to_device(batch_data, self._target_device)
 
-                # Unoptimized Implementation -- easier to modify for experimentation since autograd handles backward but perf is 10X worse than optimized version
                 if self.default_impl: 
                     #with torch.cuda.amp.autocast(enabled=self.fp16encoder):
                     grad_accum += 1
@@ -496,7 +306,6 @@ class GenericModel(nn.Sequential):
                     if self.accum == 1:
                         do_forward = not self.custom_cuda or (bsz % 8 != 0) or ((self.count % LOSS_SAMPLE_FREQ == 0) and self.compute_loss)
                         # Do xfc forward-backward 
-                        #if (not (self.custom_cuda and bsz%8 == 0)):
                         if do_forward:
                           loss_model.xfc_forward(embed_out, self.outsoft[0:bsz,:])
                         loss += loss_model.xfc_backward(embed_out, self.outsoft[0:bsz,:], pos_x_y[0], pos_x_y[1], self.grad_input[0:bsz,:], not do_forward) 
@@ -528,8 +337,7 @@ class GenericModel(nn.Sequential):
                     # Update xfc layer (without scaling), free up gradient
                     self.xfc_optimizer.step()
                     self.xfc_weight.grad = None
-                    if self.xfc_bias is not None:
-                        self.xfc_bias.grad = None
+                    
                     # normalize weights
                     if self.norm:
                         #self.xfc_weight.data -= torch.mean(self.xfc_weight.data,dim=0,keepdim=True)
@@ -548,29 +356,17 @@ class GenericModel(nn.Sequential):
                     startbs += remainder
                     endbs += remainder
 
-                if self.freeze_epoch < 0 or self.freeze_epoch > epoch:
-                  embed.backward(self.grad_input[startbs:endbs,:])
+                embed.backward(self.grad_input[startbs:endbs,:])
                 if self.compute_loss and self.count % LOSS_SAMPLE_FREQ == 0:
                   loss /= (bsz*self.padded_numy)
                   total_loss += loss                       
                   training_steps += 1
                 self.count += 1
-                ''' 
-                if count % 100 == 0 and self.rank == 0:
-                  print(loss.item()," Total loss: ", total_loss.item(), " Scale: ", self.scaler.get_scale())
-                  sys.stdout.flush()
-                count += 1
-                '''
-
-                if max_grad_norm > 0: 
-                    self.scaler.unscale_(self.tf_optimizer)
-                    torch.nn.utils.clip_grad_norm_(loss_model.parameters(), max_grad_norm)
-
+  
                 # finish update with tf_optimizer
-                if self.freeze_epoch < 0 or self.freeze_epoch > epoch:
-                  self.scaler.step(self.tf_optimizer)
-                  self.tf_optimizer.zero_grad()
-                  self.scaler.update()
+                self.scaler.step(self.tf_optimizer)
+                self.tf_optimizer.zero_grad()
+                self.scaler.update()
 
                 self.xfc_scheduler.step()
                 self.tf_scheduler.step()
@@ -593,22 +389,9 @@ class GenericModel(nn.Sequential):
                     
 
     @staticmethod
-    def _get_scheduler(optimizer, scheduler: str, warmup_steps: int, explore_steps: int, t_total: int):
-        scheduler = scheduler.lower()
-        if scheduler == 'constantlr':
-            return transformers.get_constant_schedule(optimizer)
-        elif scheduler == 'warmupconstant':
-            return transformers.get_constant_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps)
-        elif scheduler == 'warmuplinear':
-            return transformers.get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=t_total)
-        elif scheduler == 'warmupexplore':
-            return get_linear_schedule_with_warmup_explore(optimizer, num_warmup_steps=warmup_steps, num_explore_steps=explore_steps,num_training_steps=t_total)
-        elif scheduler == 'warmupcosine':
-            return transformers.get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=t_total)
-        elif scheduler == 'warmupcosinewithhardrestarts':
-            return transformers.get_cosine_with_hard_restarts_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=t_total)
-        else:
-            raise ValueError("Unknown scheduler {}".format(scheduler))
+    def _get_scheduler(optimizer,  warmup_steps: int, t_total: int):
+        return transformers.get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=t_total)
+     
             
     def batch_to_device(self, batch, device):
         if isinstance(batch, torch.Tensor):
@@ -774,20 +557,16 @@ class BCELossMultiNode(nn.Module):
       if self.model.fp16xfc: # do fp16 conversions once
             embed_out = embed_out.to(torch.float16)  
             self.xfc_weight = self.model.xfc_weight.to(torch.float16)
-            if self.model.xfc_bias is not None:
-                self.xfc_bias = self.model.xfc_bias.to(torch.float16)
+            
       else:
             self.xfc_weight = self.model.xfc_weight  
-            self.xfc_bias = self.model.xfc_bias
       return embed_out
 
     def xfc_forward(self, embed, out):
         # run fully-connected layer in model-parallel manner
         # autocast doesn't work when out tensor is specified!
-        if self.model.xfc_bias is not None:
-            torch.addmm(self.xfc_bias,embed,self.xfc_weight.t(),out=out)
-        else:
-            torch.matmul(embed, self.xfc_weight.t(), out=out)
+      
+        torch.matmul(embed, self.xfc_weight.t(), out=out)
         return  
 
 
@@ -851,12 +630,7 @@ class BCELossMultiNode(nn.Module):
              torch.addmm(self.model.xfc_weight.grad,out.t(),embed_out,beta=1,alpha=1,out=self.model.xfc_weight.grad)
            #self.model.xfc_weight.grad += out.t().mm(embed_out).to(torch.float32)
 
-        if self.model.xfc_bias is not None:
-            if self.model.xfc_bias.grad is None:
-                self.model.xfc_bias.grad = out.sum(0).to(torch.float32)
-            else:
-                self.model.xfc_bias.grad += out.sum(0).to(torch.float32)
-
+       
         if self.model.world_size > 1:
           # wait for grad_input
           work.wait() 
@@ -1016,10 +790,6 @@ class FullPredictor():
                         end_bs = bsz
                         xfcz = end_bs - start_bs
 
-        if False and model.rank == 0:
-            np.savetxt("pred.txt",inds,fmt="%d")
-            np.savetxt("logits.txt",data,fmt="%.4e")
-
         if model.rank == 0:
             return csr_matrix((data.ravel(), inds.ravel(), indptr), (datalen, numy))
         else:
@@ -1038,13 +808,10 @@ class PrecEvaluator():
 
     def __call__(self, loss_model, epoch: int = -1, loss: float = -1.0, out_dir: str = None, name: str = ''):
         if self.model.rank == 0:
-          print(self.dataloader.dataset.labels[0].shape,flush=True)
+          print(self.dataloader.dataset.labels.shape,flush=True)
           print(f'Evaluating {name} {["after epoch %d: "%epoch, ": "][name == ""]}', flush=True)
-        #self.predictor.K = max(self.predictor.K, 100)
-        if (epoch < 0) or (epoch == self.model.epochs - 1):
-          self.predictor.K = 100 #100
-        else:  # save time on large datasets
-          self.predictor.K = 5
+      
+        self.predictor.K = 5
         score_mat = self.predictor(loss_model, self.model, self.dataloader)
 
         if self.model.rank == 0:
@@ -1055,14 +822,7 @@ class PrecEvaluator():
           print('Calculating accuracy in rank 0...',flush=True)
           if self.filter_mat is not None:
             _filter(score_mat, self.filter_mat, copy=False)
-          if ((epoch < 0) or  (epoch == self.model.epochs - 1)):
-            #recall = new_recall(self.dataloader.dataset.labels[0], score_mat, top_k=100)*100
-            recall = xc_metrics.recall(score_mat, self.dataloader.dataset.labels[0], k=100)*100
-            recall = recall[99]
-            print(f'Recall@100: {"%.2f"%recall}', flush=True)
-          else: # save time
-            recall = 0.0
-          res = printacc(score_mat, X_Y=self.dataloader.dataset.labels[0], K=max(5, self.K), disp=False, inv_prop_=self.inv_prop) 
+          res = printacc(score_mat, X_Y=self.dataloader.dataset.labels, K=max(5, self.K), disp=False, inv_prop_=self.inv_prop) 
        
         if self.model.rank == 0 and out_dir is not None:
             out_file = f'{out_dir}/{[name+"_", ""][name == ""]}evaluation.tsv'
@@ -1070,7 +830,7 @@ class PrecEvaluator():
             if not os.path.exists(out_file):
                 print('\t'.join(['epoch', 'time', 'loss', *[f'{metric}@1' for metric in res.index], *[f'{metric}@3' for metric in res.index], *[f'{metric}@{self.K}' for metric in res.index], 'R@100']), file=open(out_file, 'w'))
             with open(out_file, 'a') as f:
-                print('\t'.join([str(epoch), str(datetime.datetime.now()), str("%.4E"%loss), *["%.2f"%val for val in res['1'].values], *["%.2f"%val for val in res['3'].values], *["%.2f"%val for val in res[str(self.K)].values], "%.2f"%recall]), file=f)
+                print('\t'.join([str(epoch), str(datetime.datetime.now()), str("%.4E"%loss), *["%.2f"%val for val in res['1'].values], *["%.2f"%val for val in res['3'].values], *["%.2f"%val for val in res[str(self.K)].values], "0.00"]), file=f)
         if self.model.rank == 0:
           score = res[str(self.K)][self.metric]
           score_tensor = torch.tensor(score, dtype=torch.float32, device=self.model._target_device)
@@ -1085,8 +845,8 @@ class PrecEvaluator():
         if score > self.best_score:
             if self.model.rank == 0:
               print(f'Rank {self.model.rank}: found best model with score : {"%.4f"%score}', flush=True)
-              print('\t'.join(['epoch', 'time', 'loss', *[f'{metric}@1' for metric in res.index], *[f'{metric}@3' for metric in res.index], *[f'{metric}@{self.K}' for metric in res.index], 'R@100']))
-              print('\t'.join([str(epoch), str(datetime.datetime.now()), str("%.4E"%loss), *["%.2f"%val for val in res['1'].values], *["%.2f"%val for val in res['3'].values], *["%.2f"%val for val in res[str(self.K)].values], "%.2f"%recall]), flush=True)
+              print('\t'.join(['epoch', 'time', 'loss', *[f'{metric}@1' for metric in res.index], *[f'{metric}@3' for metric in res.index], *[f'{metric}@{self.K}' for metric in res.index]]))
+              print('\t'.join([str(epoch), str(datetime.datetime.now()), str("%.4E"%loss), *["%.2f"%val for val in res['1'].values], *["%.2f"%val for val in res['3'].values], *["%.2f"%val for val in res[str(self.K)].values]]), flush=True)
 
             self.best_score = score
             if out_dir is not None:
@@ -1096,12 +856,11 @@ class PrecEvaluator():
 
 
 class PreTokBertDataset(torch.utils.data.Dataset):
-    def __init__(self, tokenization_folder, X_Y, num_points, max_len, shorty=None, doc_type='trn', iter_mode='pointwise'):
+    def __init__(self, tokenization_folder, X_Y, num_points, max_len, doc_type='trn', iter_mode='pointwise'):
         self.num_points = num_points
         self.max_len = max_len
         self.iter_mode = iter_mode
         self.labels = X_Y
-        self.shorty = shorty
         self.start =  True
         self.tokenization_folder = tokenization_folder
         self.doc_type = doc_type
@@ -1131,104 +890,8 @@ class PreTokBertDataset(torch.utils.data.Dataset):
         return self.num_points
 
 
-class BertDataset(torch.utils.data.Dataset):
-
-    def __init__(self, point_texts, label_texts, labels, shorty=None, tokenizer_type='roberta-base', maxsize=512, data_root_dir=None):
-        self.point_texts = point_texts
-        self.label_texts = label_texts
-        self.labels      = labels
-        self.shorty      = shorty
-        self.merge_fts_func = bert_fts_batch_to_tensor
-
-        assert len(point_texts) == labels[0].shape[0], f'length of point texts ({len(point_texts)}) should be same as num rows of label correlation matrix ({labels[0].shape[0]})'
-        assert len(label_texts) == labels[0].shape[1], f'length of label texts ({len(label_texts)}) should be same as num cols of label correlation matrix ({labels[0].shape[1]})'
-        
-        print("------ Some stats about the dataset ------")
-        print(f'Num points : {len(point_texts)}')
-        print(f'Num labels : {len(label_texts)}')
-        print("------------------------------------------", end='\n\n')
-
-        self.num_Y = self.labels[0].shape[1]
-        self.num_X = self.labels[0].shape[0]
-        
-        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_type, do_lower_case=True)
-        self.data_dir = f'{data_root_dir}/{tokenizer_type}_{maxsize}'
-        try:
-            print(f'trying to load pre-tokenized files from {self.data_dir} ...')
-            self.point_encoded_dict = {'input_ids': np.load(f'{self.data_dir}/point_input_ids_{self.num_X}.npy'),
-                                       'attention_mask': np.load(f'{self.data_dir}/point_attention_mask_{self.num_X}.npy')}
-            self.label_encoded_dict = {'input_ids': np.load(f'{self.data_dir}/label_input_ids_{self.num_Y}.npy'),
-                                       'attention_mask': np.load(f'{self.data_dir}/label_attention_mask_{self.num_Y}.npy')}
-            print(f'successfully loaded pre-tokenized files from {self.data_dir}')
-        except:
-            print(f'unable to load pre-tokenized files from {self.data_dir}')
-            print(f'creating tokenized files from raw texts...')
-            
-            start=time.time(); self.point_encoded_dict = self.convert(point_texts, maxsize); end=time.time()
-            print(f'tokeinized points in {"%.2f"%(end-start)} s')
-            start=time.time(); self.label_encoded_dict = self.convert(label_texts, maxsize); end=time.time()
-            print(f'tokeinized labels in {"%.2f"%(end-start)} s')
-            
-            if not data_root_dir is None:
-                print(f'saving tokenized files in {self.data_dir}')
-                os.makedirs(self.data_dir, exist_ok=True)
-                np.save(f'{self.data_dir}/point_input_ids_{self.num_X}.npy', self.point_encoded_dict['input_ids'])
-                np.save(f'{self.data_dir}/point_attention_mask_{self.num_X}.npy', self.point_encoded_dict['attention_mask'])
-                np.save(f'{self.data_dir}/label_input_ids_{self.num_Y}.npy', self.label_encoded_dict['input_ids'])
-                np.save(f'{self.data_dir}/label_attention_mask_{self.num_Y}.npy', self.label_encoded_dict['attention_mask'])
-
-        
-    def convert(self, corpus, maxsize=512, bsz=4096):
-        max_len = max(min(max([len(sen) for sen in corpus]), maxsize), 16)
-        encoded_dict = {'input_ids': [], 'attention_mask': []}
-        
-        for ctr in tqdm(range(0, len(corpus), bsz)):
-            temp = self.tokenizer.batch_encode_plus(
-                    corpus[ctr:min(ctr+bsz, len(corpus))],  # Sentence to encode.
-                    add_special_tokens = True,              # Add '[CLS]' and '[SEP]'
-                    max_length = max_len,                   # Pad & truncate all sentences.
-                    padding = 'max_length',
-                    return_attention_mask = True,           # Construct attn. masks.
-                    return_tensors = 'np',                  # Return numpy tensors.
-                    truncation=True
-            )
-            encoded_dict['input_ids'].append(temp['input_ids'])
-            encoded_dict['attention_mask'].append(temp['attention_mask'])
-            
-        encoded_dict['input_ids'] = np.vstack(encoded_dict['input_ids'])
-        encoded_dict['attention_mask'] = np.vstack(encoded_dict['attention_mask'])
-        return encoded_dict
-
-    def __getitem__(self, index):
-        return index
-    
-    def get_fts(self, index, source='label'):
-        if source == 'label':
-            encoded_dict = self.label_encoded_dict
-        elif source == 'point':
-            encoded_dict = self.point_encoded_dict
-            
-        if isinstance(index, int) or isinstance(index, np.int32):
-            return {'input_ids': encoded_dict['input_ids'][index], 
-                    'attention_mask': encoded_dict['attention_mask'][index]}
-        else:
-            return bert_fts_batch_to_tensor(encoded_dict['input_ids'][index],
-                                            encoded_dict['attention_mask'][index])
-
-    @property
-    def num_instances(self):
-        return self.labels[0].shape[0]
-
-    @property
-    def num_labels(self):
-        return self.labels[0].shape[1]
-    
-    def __len__(self):
-        return self.labels[0].shape[0]
-
-# changed to handle hybrid data-model parallel architecture
 class XCCollator():
-    def __init__(self, padded_numy, dataset, my_rank, world_size, num_slices, slice_size, accum, xfcz, train, yfull):
+    def __init__(self, padded_numy, dataset, my_rank, world_size, accum, xfcz, train, yfull):
         self.numy = padded_numy
         self.dataset = dataset
         self.rank = my_rank
@@ -1236,11 +899,6 @@ class XCCollator():
         self.startlabel = self.rank*self.numy//world_size
         self.endlabel = (self.rank+1)*self.numy//world_size
         self.test = not train
-        self.slice_size = slice_size
-        self.slice_start = 0
-        self.slice_end = slice_size
-        self.cur_slice = 0
-        self.num_slices = num_slices
         self.accum = accum
         self.xfcz = xfcz # xfc batch size with accum
         self.yfull = yfull
@@ -1266,13 +924,7 @@ class XCCollator():
            return {'batch_size': bsz, 'numy': self.numy,  'xfts': self.dataset.get_fts(ids, 'point') } 
 
         # labels has full batch size but only the partial set of labels that each node is responsible for
-        #csr_coo  =  self.dataset.labels[full_ids].tocsc()[:,self.startlabel:self.endlabel].tocoo()
-        if (full_ids[0] >= self.slice_end) and (self.cur_slice < self.num_slices - 1):
-             self.cur_slice += 1
-             self.slice_start = self.slice_end
-             self.slice_end += self.slice_size
-        csr_coo  =  self.dataset.labels[self.cur_slice][full_ids-self.slice_start].tocoo()
-        #print(self.rank,ids[0],self.dataset.labels[full_ids],csr_coo.col)
+        csr_coo  =  self.dataset.labels[full_ids].tocoo()
         pos_tensor = torch.LongTensor(np.stack((csr_coo.row, csr_coo.col)))
         index_tensor = None
 
@@ -1289,7 +941,7 @@ class XCCollator():
             i = 0
             while (end_bs <= bsz):
                 temp_ids = full_ids[start_bs:end_bs]
-                index_tensor[i+1] = index_tensor[i] + self.dataset.labels[self.cur_slice][temp_ids-self.slice_start].nnz
+                index_tensor[i+1] = index_tensor[i] + self.dataset.labels[temp_ids].nnz
                 pos_tensor[0,index_tensor[i]:index_tensor[i+1]] -= start_bs
                 #print(full_ids[0],i,index_tensor[i],len(csr_coo.row),flush=True)
                 i += 1
@@ -1301,7 +953,6 @@ class XCCollator():
 
         batch_data = {'batch_size': bsz,
                       'numy': self.numy,
-                      'shorty': None,
                       'z': pos_tensor, #using sparse values instead of 'y'
                       'i': index_tensor,
                       'y': None,
@@ -1311,11 +962,7 @@ class XCCollator():
                       'xfts': self.dataset.get_fts(ids, 'point')
                      }
             
-        if self.dataset.shorty is not None:
-            batch_data['shorty'] = csr_to_pad_tensor(self.dataset.shorty[ids], self.numy)
-            
         if self.yfull:
-            batch_data['y'] = csr_to_pad_tensor(self.dataset.labels[self.cur_slice][full_ids-self.slice_start], self.numy//self.world_size)
-            #batch_data['yfull'] = torch.zeros(bsz, self.numy+1).scatter_(1, batch_data['y']['inds'], batch_data['y']['vals'])[:, :-1]
+            batch_data['y'] = csr_to_pad_tensor(self.dataset.labels[full_ids], self.numy//self.world_size)
                 
         return batch_data

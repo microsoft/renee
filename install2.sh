@@ -12,9 +12,8 @@ pip install threadpoolctl==2.0.0
 pip install pandas
 pip install cython
 
-pip install seaborn sentence-transformer
-pip install --no-binary :all: nmslib
-pip install pybind11==2.6.1 fasttext sklearn cython numpy==1.20.3 scikit-learn
+pip install sentence-transformer
+pip install pybind11==2.6.1 fasttext cython numpy==1.20.3 scikit-learn
 
 
 #git clone https://github.com/kunaldahiya/pyxclib
