@@ -94,21 +94,6 @@ def csr_to_pad_tensor(spmat, pad):
     ret['vals'] = ret['vals'].reshape((spmat.shape[0], maxlen))
     return ret
 
-def get_index_values(spmat, row_index, add_one=False):
-    start = spmat.indptr[row_index]; end = spmat.indptr[row_index+1]
-    row_data = spmat.data[start:end]
-    row_indices = spmat.indices[start:end]
-    
-    if(add_one):
-        row_indices = row_indices + 1
-
-    return row_indices, row_data
-
-class Params:
-    def __init__(self):
-        pass
-
-
 class FP32Linear(nn.Module):
     def __init__(self, input_size, output_size, bias=True):
         super(FP32Linear, self).__init__()
@@ -164,7 +149,7 @@ class TransformerInputLayer(nn.Module):
 LOSS_SAMPLE_FREQ = 100 
 
 class GenericModel(nn.Sequential):
-    def __init__(self, rank, args, numy, numy_per_gpu, per_gpu_batch_size, modules: Iterable[nn.Module] = None,  device: str = None, name: str = 'generic_model', out_dir: str = None, encoder_offset: int = 1, encoder_normalize: bool = False):
+    def __init__(self, rank, args, numy, numy_per_gpu, per_gpu_batch_size, modules: Iterable[nn.Module] = None,  device: str = None, name: str = 'generic_model', out_dir: str = None):
         if modules is not None and not isinstance(modules, OrderedDict):
             modules = OrderedDict([(str(idx), module) for idx, module in enumerate(modules)])
         super().__init__()
@@ -184,7 +169,6 @@ class GenericModel(nn.Sequential):
         self.fp16encoder = not args.fp32encoder
         self.fp16xfc = args.fp16xfc
         self.accum = args.accum 
-        self.nosync = args.nosync
         self.compute_loss = not args.noloss
         self.checkpoint_resume = args.checkpoint_resume
         self.norm = args.norm
@@ -211,35 +195,8 @@ class GenericModel(nn.Sequential):
         self._target_device = torch.device(device)
         self.name = name
         self.out_dir = out_dir
-        self.encoder_offset = encoder_offset
-        self.encoder_normalize = encoder_normalize
         os.makedirs(self.out_dir, exist_ok=True)
-        print(f"{name} on device: {device}, encoder offset: {encoder_offset}, encoder normalize: {encoder_normalize}")
         
-    def encode(self, inp):
-        for i, module in enumerate(self):
-            if i >= len(self)-self.encoder_offset:
-                break
-            inp = module(inp)
-        if self.encoder_normalize: return F.normalize(inp)
-        else: return inp
-    
-    def get_embs(self, dataset, source='point', bsz=256):
-        if source == 'label':
-            numx = dataset.labels.shape[1]
-        elif source == 'point':
-            numx = dataset.labels.shape[0]
-            
-        embs = [] 
-        self.eval()
-        with torch.no_grad():
-            for ctr in tqdm(range(0, numx, bsz), desc=f"Embedding {source}s"):
-                batch_data = dataset.get_fts(np.array(range(ctr, min(numx, ctr+bsz))), source)
-                batch_data = self.batch_to_device(batch_data, self._target_device)
-                temp_embs = self.encode(batch_data)
-                embs.append(temp_embs.detach().cpu().numpy())
-                del temp_embs, batch_data
-        return np.vstack(embs)
 
     @profile
     def fit(self,
@@ -874,7 +831,7 @@ class PrecEvaluator():
 
     def __call__(self, loss_model, epoch: int = -1, loss: float = -1.0, out_dir: str = None, name: str = ''):
         if self.model.rank == 0:
-          print(self.dataloader.dataset.labels[0].shape,flush=True)
+          print(self.dataloader.dataset.labels.shape,flush=True)
           print(f'Evaluating {name} {["after epoch %d: "%epoch, ": "][name == ""]}', flush=True)
         #self.predictor.K = max(self.predictor.K, 100)
         if (epoch < 0) or (epoch == self.model.epochs - 1):
@@ -891,22 +848,15 @@ class PrecEvaluator():
           print('Calculating accuracy in rank 0...',flush=True)
           if self.filter_mat is not None:
             _filter(score_mat, self.filter_mat, copy=False)
-          if ((epoch < 0) or  (epoch == self.model.epochs - 1)):
-            #recall = new_recall(self.dataloader.dataset.labels[0], score_mat, top_k=100)*100
-            recall = xc_metrics.recall(score_mat, self.dataloader.dataset.labels[0], k=100)*100
-            recall = recall[99]
-            print(f'Recall@100: {"%.2f"%recall}', flush=True)
-          else: # save time
-            recall = 0.0
-          res = printacc(score_mat, X_Y=self.dataloader.dataset.labels[0], K=max(5, self.K), disp=False, inv_prop_=self.inv_prop) 
+          res = printacc(score_mat, X_Y=self.dataloader.dataset.labels, K=max(5, self.K), disp=False, inv_prop_=self.inv_prop) 
        
         if self.model.rank == 0 and out_dir is not None:
             out_file = f'{out_dir}/{[name+"_", ""][name == ""]}evaluation.tsv'
             print(f'dumping evaluation in {out_file}')
             if not os.path.exists(out_file):
-                print('\t'.join(['epoch', 'time', 'loss', *[f'{metric}@1' for metric in res.index], *[f'{metric}@3' for metric in res.index], *[f'{metric}@{self.K}' for metric in res.index], 'R@100']), file=open(out_file, 'w'))
+                print('\t'.join(['epoch', 'time', 'loss', *[f'{metric}@1' for metric in res.index], *[f'{metric}@3' for metric in res.index], *[f'{metric}@{self.K}' for metric in res.index]]), file=open(out_file, 'w'))
             with open(out_file, 'a') as f:
-                print('\t'.join([str(epoch), str(datetime.datetime.now()), str("%.4E"%loss), *["%.2f"%val for val in res['1'].values], *["%.2f"%val for val in res['3'].values], *["%.2f"%val for val in res[str(self.K)].values], "%.2f"%recall]), file=f)
+                print('\t'.join([str(epoch), str(datetime.datetime.now()), str("%.4E"%loss), *["%.2f"%val for val in res['1'].values], *["%.2f"%val for val in res['3'].values], *["%.2f"%val for val in res[str(self.K)].values]]), file=f)
         if self.model.rank == 0:
           score = res[str(self.K)][self.metric]
           score_tensor = torch.tensor(score, dtype=torch.float32, device=self.model._target_device)
@@ -921,8 +871,8 @@ class PrecEvaluator():
         if score > self.best_score:
             if self.model.rank == 0:
               print(f'Rank {self.model.rank}: found best model with score : {"%.4f"%score}', flush=True)
-              print('\t'.join(['epoch', 'time', 'loss', *[f'{metric}@1' for metric in res.index], *[f'{metric}@3' for metric in res.index], *[f'{metric}@{self.K}' for metric in res.index], 'R@100']))
-              print('\t'.join([str(epoch), str(datetime.datetime.now()), str("%.4E"%loss), *["%.2f"%val for val in res['1'].values], *["%.2f"%val for val in res['3'].values], *["%.2f"%val for val in res[str(self.K)].values], "%.2f"%recall]), flush=True)
+              print('\t'.join(['epoch', 'time', 'loss', *[f'{metric}@1' for metric in res.index], *[f'{metric}@3' for metric in res.index], *[f'{metric}@{self.K}' for metric in res.index]]))
+              print('\t'.join([str(epoch), str(datetime.datetime.now()), str("%.4E"%loss), *["%.2f"%val for val in res['1'].values], *["%.2f"%val for val in res['3'].values], *["%.2f"%val for val in res[str(self.K)].values]]), flush=True)
 
             self.best_score = score
             if out_dir is not None:
@@ -1001,7 +951,7 @@ class XCCollator():
            return {'batch_size': bsz, 'numy': self.numy,  'xfts': self.dataset.get_fts(ids, 'point') } 
 
         # labels has full batch size but only the partial set of labels that each node is responsible for
-        csr_coo  =  self.dataset.labels[0][full_ids].tocoo()
+        csr_coo  =  self.dataset.labels[full_ids].tocoo()
         #print(self.rank,ids[0],self.dataset.labels[full_ids],csr_coo.col)
         pos_tensor = torch.LongTensor(np.stack((csr_coo.row, csr_coo.col)))
         index_tensor = None
@@ -1019,7 +969,7 @@ class XCCollator():
             i = 0
             while (end_bs <= bsz):
                 temp_ids = full_ids[start_bs:end_bs]
-                index_tensor[i+1] = index_tensor[i] + self.dataset.labels[0][temp_ids].nnz
+                index_tensor[i+1] = index_tensor[i] + self.dataset.labels[temp_ids].nnz
                 pos_tensor[0,index_tensor[i]:index_tensor[i+1]] -= start_bs
                 #print(full_ids[0],i,index_tensor[i],len(csr_coo.row),flush=True)
                 i += 1
@@ -1042,7 +992,7 @@ class XCCollator():
             
             
         if self.yfull:
-            batch_data['y'] = csr_to_pad_tensor(self.dataset.labels[0][full_ids], self.numy//self.world_size)
+            batch_data['y'] = csr_to_pad_tensor(self.dataset.labels[full_ids], self.numy//self.world_size)
             #batch_data['yfull'] = torch.zeros(bsz, self.numy+1).scatter_(1, batch_data['y']['inds'], batch_data['y']['vals'])[:, :-1]
                 
         return batch_data
