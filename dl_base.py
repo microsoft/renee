@@ -43,23 +43,7 @@ except ModuleNotFoundError:
 def noop(func):
     return func
 profile = noop
-'''
-@nb.njit(cache=True)
-def _recall(true_labels_indices, true_labels_indptr, pred_labels_data, pred_labels_indices, pred_labels_indptr, top_k):
-    fracs = []
-    for i in range(len(true_labels_indptr) - 1):
-        _true_labels = true_labels_indices[true_labels_indptr[i] : true_labels_indptr[i + 1]]
-        _data = pred_labels_data[pred_labels_indptr[i] : pred_labels_indptr[i + 1]]
-        _indices = pred_labels_indices[pred_labels_indptr[i] : pred_labels_indptr[i + 1]]
-        top_inds = np.argsort(_data)[::-1][:top_k]
-        _pred_labels = _indices[top_inds]
-        if(len(_true_labels) > 0):
-            fracs.append(len(set(_pred_labels).intersection(set(_true_labels))) / len(_true_labels))
-    return np.mean(np.array(fracs, dtype=np.float32))
-def new_recall(true_labels, pred_labels, top_k):
-    return _recall(true_labels.indices.astype(np.int64), true_labels.indptr,
-    pred_labels.data, pred_labels.indices.astype(np.int64), pred_labels.indptr, top_k)
-'''
+
 
 def printacc(score_mat, K = 5, X_Y = None, disp = True, inv_prop_ = None):
     if X_Y is None: X_Y = tst_X_Y
@@ -153,132 +137,29 @@ class FP32Linear(nn.Module):
         if self.transformer_bias is not None:
             self.transformer_bias.data.uniform_(-stdv, stdv)
 
-from torch.nn import Parameter
-def _weight_drop(module, weights, dropout):
-    """
-    Helper for `WeightDrop`.
-    """
-
-    for name_w in weights:
-        w = getattr(module, name_w)
-        del module._parameters[name_w]
-        module.register_parameter(name_w + '_raw', Parameter(w))
-
-    original_module_forward = module.forward
-
-    def forward(*args, **kwargs):
-        for name_w in weights:
-            raw_w = getattr(module, name_w + '_raw')
-            w = nn.Parameter(torch.nn.functional.dropout(raw_w, p=dropout, training=module.training))
-            setattr(module, name_w, w)
-
-        return original_module_forward(*args, **kwargs)
-
-    setattr(module, 'forward', forward)
-class WeightDropLinear(nn.Linear):
-    """
-    Wrapper around :class:`torch.nn.Linear` that adds ``weight_dropout`` named argument.
-
-    Args:
-        weight_dropout (float): The probability a weight will be dropped.
-    """
-
-    def __init__(self, *args, weight_dropout=0.0, **kwargs):
-        super().__init__(*args, **kwargs)
-        weights = ['weight']
-        _weight_drop(self, weights, weight_dropout)
 
 class TransformerInputLayer(nn.Module):
-    def __init__(self, transformer, pooler_type='pooler'):
+    def __init__(self, transformer):
         super(TransformerInputLayer, self).__init__()
         self.transformer = transformer
-        self.pooler = self.create_pooler(pooler_type)
-        if pooler_type == 'concat':
-          self.layer_weights = nn.Parameter(torch.tensor([1] * (4), dtype=torch.float))
-
+        self.pooler = self.create_pooler()
+      
     @profile
     def forward(self, data):
-        #print("before transformer",torch.cuda.memory_summary())
-        #torch.cuda.reset_max_memory_allocated()
-        #sys.stdout.flush()
         return self.pooler(self.transformer(**data),data).contiguous()
     
-    def create_pooler(self, pooler_type: str):
-        if pooler_type == 'pooler':
-            def f(tf_output, batch_data):
-                return tf_output['pooler_output']
-            return f
-        elif pooler_type == 'cls':
-            def f(tf_output, batch_data):
-                return tf_output['last_hidden_state'][:, 0]
-            return f
-        elif pooler_type == 'mean':
-            def f(tf_output, batch_data):
-                last_hidden_state = tf_output['last_hidden_state']
-                input_mask_expanded = batch_data['attention_mask'].unsqueeze(-1).expand(last_hidden_state.size()).float()
-                sum_hidden_state = torch.sum(last_hidden_state * input_mask_expanded, 1)
+    def create_pooler(self):
+        def f(tf_output, batch_data):
+            last_hidden_state = tf_output['last_hidden_state']
+            input_mask_expanded = batch_data['attention_mask'].unsqueeze(-1).expand(last_hidden_state.size()).float()
+            sum_hidden_state = torch.sum(last_hidden_state * input_mask_expanded, 1)
 
-                sum_mask = input_mask_expanded.sum(1)
-                sum_mask = torch.clamp(sum_mask, min=1e-9)
+            sum_mask = input_mask_expanded.sum(1)
+            sum_mask = torch.clamp(sum_mask, min=1e-9)
 
-                return sum_hidden_state / sum_mask
-            return f
-        elif pooler_type == 'concat':
-            def f(tf_output, batch_data):
-                all_hidden_states = torch.stack(tf_output['hidden_states']) # e.g. torch.Size([7, 512, 32, 768])
-                all_layer_embedding = all_hidden_states[0:, :, :, :]
-                input_mask_expanded = batch_data['attention_mask'].unsqueeze(0).unsqueeze(-1).expand(all_layer_embedding.size()).float()
-                sum_hidden_state = torch.sum(all_layer_embedding * input_mask_expanded, 2)
-                sum_mask = input_mask_expanded.sum(2)
-                sum_mask = torch.clamp(sum_mask, min=1e-9)
-                all_layer_embedding_mean = sum_hidden_state/sum_mask
-
-                weight_factor = self.layer_weights.unsqueeze(-1).unsqueeze(-1).expand(all_layer_embedding_mean.size())
-                weighted_average = (weight_factor*all_layer_embedding_mean).sum(dim=0) / self.layer_weights.sum()
-                #print(all_layer_embedding.shape,all_layer_embedding_mean.shape,weighted_average.shape,flush=True)
-                return weighted_average
-            return f
-        elif pooler_type == 'concatold2':
-            def f(tf_output, batch_data):
-                last_hidden_state = tf_output['last_hidden_state']
-                input_mask_expanded = batch_data['attention_mask'].unsqueeze(-1).expand(last_hidden_state.size()).float()
-                sum_hidden_state = torch.sum(last_hidden_state * input_mask_expanded, 1)
-
-                sum_mask = input_mask_expanded.sum(1)
-                sum_mask = torch.clamp(sum_mask, min=1e-9)
-
-                mean_emb = sum_hidden_state / sum_mask
-
-                last_hidden_state[input_mask_expanded == 0] = -1e9  # Set padding tokens to large negative value
-                max_emb = torch.max(last_hidden_state, 1)[0]
-                return torch.cat((mean_emb,max_emb),1)
-
-            return f
-        elif pooler_type == 'concatold':
-            def f(tf_output, batch_data):
-                last_hidden_state = tf_output['last_hidden_state']
-                input_mask_expanded = batch_data['attention_mask'].unsqueeze(-1).expand(last_hidden_state.size()).float()
-                last_hidden_state_masked = last_hidden_state * input_mask_expanded
-                last_hidden_state_masked_expanded = last_hidden_state_masked.view(last_hidden_state_masked.size(0),-1)
-                return last_hidden_state_masked_expanded
-            return f
-
-from torch.optim.lr_scheduler import LambdaLR
-def get_linear_schedule_with_warmup_explore(optimizer, num_warmup_steps, num_explore_steps, num_training_steps, last_epoch=-1):
-    """ Create a schedule with a learning rate that decreases linearly after
-    linearly increasing during a warmup period.
-    """
-
-    def lr_lambda(current_step):
-        if current_step < num_warmup_steps:
-            return float(current_step) / float(max(1, num_warmup_steps))
-        elif current_step < num_warmup_steps + num_explore_steps:
-            return 1.0
-        return max(
-            0.0, float(num_training_steps - current_step) / float(max(1, num_training_steps - num_warmup_steps - num_explore_steps))
-        )
-
-    return LambdaLR(optimizer, lr_lambda, last_epoch)
+            return sum_hidden_state / sum_mask
+        return f
+      
 
 LOSS_SAMPLE_FREQ = 100 
 
@@ -326,13 +207,6 @@ class GenericModel(nn.Sequential):
         self.xfc_weight = nn.Parameter(torch.Tensor(numy_per_gpu,args.bottleneck_dims))
         #nn.init.kaiming_uniform_(self.xfc_weight, a=math.sqrt(5))
         nn.init.normal_(self.xfc_weight,mean=0.0,std=0.02) # gpt-1 paper says this is fine since layernorm is used throughout embedding
-        if args.bias:
-            self.xfc_bias = nn.Parameter(torch.Tensor(numy_per_gpu))
-            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.xfc_weight)
-            bound = 1 / math.sqrt(fan_in)
-            nn.init.uniform_(self.xfc_bias, -bound, bound)
-        else:
-            self.xfc_bias = None
         
         self._target_device = torch.device(device)
         self.name = name
@@ -376,9 +250,8 @@ class GenericModel(nn.Sequential):
             tf_optimizer_class: Type[Optimizer],
             tf_optimizer_params : Dict[str, object],
             epochs: int = 1,
-            scheduler: str = 'warmupcosine', #'warmupexplore', #'WarmupLinear',  #'warmupcosine',
+            scheduler: str = 'warmupcosine',
             warmup_steps: int = 10000,
-            explore_steps: int = 0,
             evaluator = None,
             evaluation_epochs: int = 5,
             max_grad_norm: float = -1,
@@ -414,8 +287,8 @@ class GenericModel(nn.Sequential):
         self.xfc_optimizer = xfc_optimizer_class(xfc_optimizer_grouped_parameters, **xfc_optimizer_params)
         self.tf_optimizer = tf_optimizer_class(tf_optimizer_grouped_parameters, **tf_optimizer_params)
         
-        self.xfc_scheduler = self._get_scheduler(self.xfc_optimizer, scheduler=scheduler, warmup_steps=warmup_steps, explore_steps=explore_steps, t_total=num_train_steps)
-        self.tf_scheduler = self._get_scheduler(self.tf_optimizer, scheduler=scheduler, warmup_steps=warmup_steps, explore_steps=explore_steps, t_total=num_train_steps)
+        self.xfc_scheduler = self._get_scheduler(self.xfc_optimizer, warmup_steps=warmup_steps, t_total=num_train_steps)
+        self.tf_scheduler = self._get_scheduler(self.tf_optimizer, warmup_steps=warmup_steps, t_total=num_train_steps)
      
 
         data_iterator = iter(dataloader)
@@ -437,7 +310,6 @@ class GenericModel(nn.Sequential):
             loss_model.zero_grad()
             loss_model.train()
 
-            
             grad_accum = 0
             for _ in trange(steps_per_epoch, desc="Iteration", smoothing=0.05, disable=(self.rank != 0)):
                 try:
@@ -519,8 +391,7 @@ class GenericModel(nn.Sequential):
                     # Update xfc layer (without scaling), free up gradient
                     self.xfc_optimizer.step()
                     self.xfc_weight.grad = None
-                    if self.xfc_bias is not None:
-                        self.xfc_bias.grad = None
+                   
                     # normalize weights
                     if self.norm:
                         #self.xfc_weight.data -= torch.mean(self.xfc_weight.data,dim=0,keepdim=True)
@@ -580,24 +451,9 @@ class GenericModel(nn.Sequential):
             if self.checkpoint_resume != '':
                 self.checkpoint(mean_loss)
                     
-
     @staticmethod
-    def _get_scheduler(optimizer, scheduler: str, warmup_steps: int, explore_steps: int, t_total: int):
-        scheduler = scheduler.lower()
-        if scheduler == 'constantlr':
-            return transformers.get_constant_schedule(optimizer)
-        elif scheduler == 'warmupconstant':
-            return transformers.get_constant_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps)
-        elif scheduler == 'warmuplinear':
-            return transformers.get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=t_total)
-        elif scheduler == 'warmupexplore':
-            return get_linear_schedule_with_warmup_explore(optimizer, num_warmup_steps=warmup_steps, num_explore_steps=explore_steps,num_training_steps=t_total)
-        elif scheduler == 'warmupcosine':
-            return transformers.get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=t_total)
-        elif scheduler == 'warmupcosinewithhardrestarts':
-            return transformers.get_cosine_with_hard_restarts_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=t_total)
-        else:
-            raise ValueError("Unknown scheduler {}".format(scheduler))
+    def _get_scheduler(optimizer, warmup_steps: int, t_total: int):
+        return transformers.get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=t_total)
             
     def batch_to_device(self, batch, device):
         if isinstance(batch, torch.Tensor):
@@ -763,20 +619,16 @@ class BCELossMultiNode(nn.Module):
       if self.model.fp16xfc: # do fp16 conversions once
             embed_out = embed_out.to(torch.float16)  
             self.xfc_weight = self.model.xfc_weight.to(torch.float16)
-            if self.model.xfc_bias is not None:
-                self.xfc_bias = self.model.xfc_bias.to(torch.float16)
+            
       else:
             self.xfc_weight = self.model.xfc_weight  
-            self.xfc_bias = self.model.xfc_bias
       return embed_out
 
     def xfc_forward(self, embed, out):
         # run fully-connected layer in model-parallel manner
         # autocast doesn't work when out tensor is specified!
-        if self.model.xfc_bias is not None:
-            torch.addmm(self.xfc_bias,embed,self.xfc_weight.t(),out=out)
-        else:
-            torch.matmul(embed, self.xfc_weight.t(), out=out)
+       
+        torch.matmul(embed, self.xfc_weight.t(), out=out)
         return  
 
 
@@ -840,12 +692,7 @@ class BCELossMultiNode(nn.Module):
              torch.addmm(self.model.xfc_weight.grad,out.t(),embed_out,beta=1,alpha=1,out=self.model.xfc_weight.grad)
            #self.model.xfc_weight.grad += out.t().mm(embed_out).to(torch.float32)
 
-        if self.model.xfc_bias is not None:
-            if self.model.xfc_bias.grad is None:
-                self.model.xfc_bias.grad = out.sum(0).to(torch.float32)
-            else:
-                self.model.xfc_bias.grad += out.sum(0).to(torch.float32)
-
+       
         if self.model.world_size > 1:
           # wait for grad_input
           work.wait() 

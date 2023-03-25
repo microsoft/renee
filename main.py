@@ -153,7 +153,7 @@ def start(device, ngpus_per_node, args):
         new_state_dict[name] = v
 
     print(encoder_.load_state_dict(new_state_dict, strict=True))  
-  encoder = TransformerInputLayer(encoder_, 'mean')
+  encoder = TransformerInputLayer(encoder_)
             
   if args.bottleneck_dims > 0:
     modules = [encoder, FP32Linear(encoder.transformer.config.hidden_size, args.bottleneck_dims, bias=False), nn.Dropout(args.dropout) ] 
@@ -188,7 +188,7 @@ def start(device, ngpus_per_node, args):
           xfc_optimizer_params= {'lr': args.lr1, 'momentum': args.mo, 'weight_decay': args.wd1,  'set_grad_none': True},  
           tf_optimizer_class = apex.optimizers.FusedAdam,
           tf_optimizer_params= {'lr': args.lr2, 'eps': 1e-06, 'set_grad_none': True, 'bias_correction': True, 'weight_decay': args.wd2},
-          epochs = args.epochs, warmup_steps = args.warmup, explore_steps = args.explore,
+          epochs = args.epochs, warmup_steps = args.warmup,
           evaluator=evaluator,
           evaluation_epochs=5)
 
@@ -245,12 +245,8 @@ def main():
                         help='DIR to checkpoint each epoch/resume from most recent checkpoint')
     parser.add_argument('--infer', action='store_true', default=False,
                         help='Perform inference of pre-trained model')
-    parser.add_argument('--bias', action='store_true', default=False,
-                        help='Add bias to classifiers')
     parser.add_argument('--warmup', type=int, default=140000, metavar='N',
                         help='number of steps for warmup (default: 140000)')
-    parser.add_argument('--explore', type=int, default=0, metavar='N',
-                        help='number of steps for explore (default: 0)')
     parser.add_argument('--accum', type=int, default=1, metavar='N',
                         help='gradient accumulation steps in XFC layer to save memory (default: 1)')
     parser.add_argument('--pre-tok', action='store_true', default=False,
@@ -263,9 +259,6 @@ def main():
                         help='Use NGAME pretrained encoder as initialization point for trainings')
     args = parser.parse_args()
 
-    if args.bias and (args.custom_cuda or args.default_impl):
-        print("XFC bias not supported yet for default_impl or custom_cuda kernels: TBD")
-        exit(-1)
     if (not args.pre_tok) and (args.tf == "custom" or args.world_size > 1 or args.init_weights):
         print("args.tf == custom or args.world_size > 1 or args.init_weights requires args.pre_tok for now")
         print("Use python -u CreateTokenizedFiles.py --data-dir Datasets/XXX --max-length YYY--tokenizer-type ZZZ to pretokenize data")
