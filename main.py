@@ -16,7 +16,6 @@ def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
-    #print(torch.utils.data.get_worker_info())
 
 def start(device, ngpus_per_node, args):
   # set seed
@@ -48,10 +47,6 @@ def start(device, ngpus_per_node, args):
   dataset=args.dataset
 
   device = f'cuda:{nb_id}'
-#   if args.world_size > 1:
-#     expname = f'BertDXML2-distributed{args.world_size}'
-#   else:
-#     expname = f'BertDXML2-{nb_id}'
   expname = args.expname
 
   torch.cuda.set_device(device)
@@ -59,41 +54,17 @@ def start(device, ngpus_per_node, args):
 
   # Load Data
   DATA_DIR = f'{root_dir}/Datasets/{dataset}'
-  if os.path.isfile(f'{DATA_DIR}/trn_X_Y_sparse_mat.npz'):
-    trn_X_Y = sp.load_npz(f'{DATA_DIR}/trn_X_Y_sparse_mat.npz')
-  else:
-    trn_X_Y = read_sparse_mat(f'{DATA_DIR}/trn_X_Y.txt')
-  if args.pre_tok:
-    if my_rank == 0: # only rank 0 does eval 
-      if os.path.isfile(f'{DATA_DIR}/tst_X_Y_sparse_mat.npz'):
-        tst_X_Y = sp.load_npz(f'{DATA_DIR}/tst_X_Y_sparse_mat.npz')
-      else:
-        tst_X_Y = read_sparse_mat(f'{DATA_DIR}/tst_X_Y.txt')
-      tst_shape_0, tst_shape_1 = tst_X_Y.shape[0], tst_X_Y.shape[1]
-    else: # just get shape
-      if os.path.isfile(f'{DATA_DIR}/tst_X_Y_sparse_mat.npz'):
-        tst_X_Y = sp.load_npz(f'{DATA_DIR}/tst_X_Y_sparse_mat.npz')
-        tst_shape_0, tst_shape_1 = tst_X_Y.shape[0], tst_X_Y.shape[1]
-      else:
-        tst_X_Y = read_sparse_mat(f'{DATA_DIR}/tst_X_Y.txt')
-        fo = open(f'{DATA_DIR}/tst_X_Y.txt', "r")
-        line = fo.readline()
-        tst_shape_0, tst_shape_1 = map(int,line.split())
-        fo.close()
+  trn_X_Y = read_sparse_mat(f'{DATA_DIR}/trn_X_Y.txt')
+  tst_X_Y = read_sparse_mat(f'{DATA_DIR}/tst_X_Y.txt')
+  tst_shape_0, tst_shape_1 = tst_X_Y.shape[0], tst_X_Y.shape[1]
+  if my_rank > 0: # only rank 0 does eval 
       tst_X_Y = None
-  else:
-      tst_X_Y = read_sparse_mat(f'{DATA_DIR}/tst_X_Y.txt')
-      tst_shape_0, tst_shape_1 = tst_X_Y.shape[0], tst_X_Y.shape[1]
-  #print(tst_shape_0,tst_shape_1,flush=True)
+
 
   if "Amazon" in dataset: A = 0.6; B = 2.6
   elif "Wiki" in dataset: A = 0.5; B = 0.4
   else : A = 0.55; B = 1.5
   inv_prop = xc_metrics.compute_inv_propesity(trn_X_Y, A, B)
-
-  temp = np.fromfile('%s/trn_filter_labels.txt'%(DATA_DIR), sep=' ').astype(int)
-  temp = temp.reshape(-1, 2).T
-  trn_filter_mat = sp.coo_matrix((np.ones(temp.shape[1]), (temp[0], temp[1])), trn_X_Y.shape).tocsr()
 
   temp = np.fromfile('%s/tst_filter_labels.txt'%(DATA_DIR), sep=' ').astype(int)
   temp = temp.reshape(-1, 2).T
@@ -102,7 +73,6 @@ def start(device, ngpus_per_node, args):
 
   if 'roberta' in args.tf: tokenizer_type = 'roberta-base'
   elif 'bert' in args.tf: tokenizer_type = 'bert-base-uncased'
-  elif 'custom' in args.tf: tokenizer_type = 'custom'
   elif 'MiniLM' in args.tf: tokenizer_type = 'miniLM_L6'
   else:
       tokenizer_type = args.tf
@@ -161,10 +131,9 @@ def start(device, ngpus_per_node, args):
     shuffle=False,
     pin_memory=False)
 
+
   # Pre-trained custom Transformer Input layer
-  
   try:
-  #encoder = TransformerInputLayer(AutoModel.from_config(AutoConfig.from_pretrained(args.tf),add_pooling_layer=False), 'mean') # randomly initialized model
       encoder_ = AutoModel.from_pretrained(args.tf,add_pooling_layer=False)
   except:
       encoder_ = AutoModel.from_pretrained(args.tf)
@@ -187,11 +156,7 @@ def start(device, ngpus_per_node, args):
   encoder = TransformerInputLayer(encoder_, 'mean')
             
   if args.bottleneck_dims > 0:
-    # modules = [encoder, nn.Dropout(args.dropout), FP32Linear(encoder.transformer.config.hidden_size, args.bottleneck_dims, bias=False)] 
-    # below version works better than above
     modules = [encoder, FP32Linear(encoder.transformer.config.hidden_size, args.bottleneck_dims, bias=False), nn.Dropout(args.dropout) ] 
-    # multiple layers doesn't help 
-    # modules = [encoder, FP32Linear(encoder.transformer.config.hidden_size, 4*args.bottleneck_dims, bias=False), FP32Linear(4*args.bottleneck_dims, args.bottleneck_dims, bias=False), nn.Dropout(args.dropout) ] 
   else:
     modules = [encoder, nn.Dropout(args.dropout)] 
     args.bottleneck_dims = encoder.transformer.config.hidden_size
@@ -208,48 +173,7 @@ def start(device, ngpus_per_node, args):
       trn_loss = BCELossMultiNodeDefault(model)
   else:
       trn_loss = BCELossMultiNode(model)
-  '''
-  if args.world_size == 1:
-    if args.default_impl:
-      trn_loss = BCELossMultiNodeDefault(model)
-    else:
-      trn_loss = BCELossMultiNode(model)
-      #trn_loss = BCELoss(model)
-  else:
-    if args.default_impl:
-      trn_loss = BCELossMultiNodeDefault(model)
-    else:
-      trn_loss = BCELossMultiNode(model)
-  '''
 
-  if args.init_weights:
-      totlen = trn_X_Y.shape[1] #numy
-      Y_ii = np.memmap(f"{DATA_DIR}/{tokenizer_type}-{args.maxlen}/lbl_input_ids.dat",
-                              mode='r', shape=(totlen, args.maxlen), dtype=np.int64)
-      Y_am = np.memmap(f"{DATA_DIR}/{tokenizer_type}-{args.maxlen}/lbl_attention_mask.dat",
-                              mode='r', shape=(totlen, args.maxlen), dtype=np.int64)
-      if my_rank == args.world_size - 1:
-          Y_len = totlen - numy_per_gpu*my_rank
-      else:
-          Y_len = numy_per_gpu
-      start = numy_per_gpu*my_rank
-      model.eval()
-      with torch.no_grad():
-         for i in range(start, start+Y_len, args.batch_size):
-            endlen = i + args.batch_size
-            if endlen > start+Y_len:
-                endlen=start+Y_len
-            maxlen = Y_am[i:endlen].sum(axis=1).max()
-            #maxlen = args.maxlen
-            batch_input = {'input_ids': torch.from_numpy(Y_ii[i:endlen, :maxlen]),
-                       'attention_mask': torch.from_numpy(Y_am[i:endlen, :maxlen])}
-            for key in batch_input:
-              batch_input[key] = batch_input[key].cuda()
-            embed_out = model.embed(batch_input)
-            embed_norm = torch.norm(embed_out,dim=1,keepdim=True)
-            model.xfc_weight.data[i-start:endlen-start, :] = (embed_out/embed_norm)
-            #model.xfc_weight.data[i-start:endlen-start, :] = model.embed(batch_input)
-      del batch_input, Y_ii, Y_am
 
   model.epochs = args.epochs
   predictor = FullPredictor()
@@ -279,12 +203,8 @@ def main():
                         help='Use custom_cuda kernels for fp16 training. Please ensure the custom kernels are optimized for the matmul sizes!!!')
     parser.add_argument('--default-impl', action='store_true', default=False,
                         help='Use default implemenation -- to get a sense of how much perf optimization gains over the default approach')
-    parser.add_argument('--init-weights', action='store_true', default=False,
-                        help='Initialize weights for xfc layer using label embeddings of encoder; needs pre_tok')
     parser.add_argument('--batch-size', type=int, default=8, metavar='N',
                         help='input per GPU batch size for training (default: 8)')
-    parser.add_argument('--freeze-epoch', type=int, default=-1, # preliminary, unoptimized version -- TBD: compute embeddings once, and remove one backward matmul
-                        help='Freeze encoder starting from freeze-epoch (default: no-freezing) ')
     parser.add_argument('--epochs', type=int, default=50, metavar='N',
                         help='number of epochs to train (default: 50)')
     parser.add_argument('--expname', type=str, default='debug', metavar='N',

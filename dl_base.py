@@ -309,7 +309,6 @@ class GenericModel(nn.Sequential):
         self.norm = args.norm
         self.custom_cuda = args.custom_cuda
         self.default_impl = args.default_impl
-        self.freeze_epoch = args.freeze_epoch
         self.default_loss = nn.BCEWithLogitsLoss(reduction='sum')
         self.count = 0
         # early explicit allocation for large variables to avoid OOM due to mem allocator fragmentation
@@ -391,7 +390,6 @@ class GenericModel(nn.Sequential):
         self.count = 0
         steps_per_epoch = len(dataloader)
         num_train_steps = int(steps_per_epoch * epochs)
-        num_freeze_steps = int(steps_per_epoch * self.freeze_epoch)
 
         # Prepare optimizers
         optimizer_params_xfc = []
@@ -417,10 +415,8 @@ class GenericModel(nn.Sequential):
         self.tf_optimizer = tf_optimizer_class(tf_optimizer_grouped_parameters, **tf_optimizer_params)
         
         self.xfc_scheduler = self._get_scheduler(self.xfc_optimizer, scheduler=scheduler, warmup_steps=warmup_steps, explore_steps=explore_steps, t_total=num_train_steps)
-        if self.freeze_epoch < 0:
-            self.tf_scheduler = self._get_scheduler(self.tf_optimizer, scheduler=scheduler, warmup_steps=warmup_steps, explore_steps=explore_steps, t_total=num_train_steps)
-        else:
-            self.tf_scheduler = self._get_scheduler(self.tf_optimizer, scheduler=scheduler, warmup_steps=warmup_steps, explore_steps=explore_steps, t_total=num_freeze_steps)
+        self.tf_scheduler = self._get_scheduler(self.tf_optimizer, scheduler=scheduler, warmup_steps=warmup_steps, explore_steps=explore_steps, t_total=num_train_steps)
+     
 
         data_iterator = iter(dataloader)
         self.epoch = 0
@@ -441,12 +437,7 @@ class GenericModel(nn.Sequential):
             loss_model.zero_grad()
             loss_model.train()
 
-            if self.freeze_epoch >= 0 and self.freeze_epoch <= epoch:
-                for i, module in enumerate(self):
-                    if i >= len(self)-self.encoder_offset:
-                        break
-                    for name,pm in module.named_parameters():
-                        pm.requires_grad = False
+            
             grad_accum = 0
             for _ in trange(steps_per_epoch, desc="Iteration", smoothing=0.05, disable=(self.rank != 0)):
                 try:
@@ -548,8 +539,7 @@ class GenericModel(nn.Sequential):
                     startbs += remainder
                     endbs += remainder
 
-                if self.freeze_epoch < 0 or self.freeze_epoch > epoch:
-                  embed.backward(self.grad_input[startbs:endbs,:])
+                embed.backward(self.grad_input[startbs:endbs,:])
                 if self.compute_loss and self.count % LOSS_SAMPLE_FREQ == 0:
                   loss /= (bsz*self.padded_numy)
                   total_loss += loss                       
@@ -567,10 +557,9 @@ class GenericModel(nn.Sequential):
                     torch.nn.utils.clip_grad_norm_(loss_model.parameters(), max_grad_norm)
 
                 # finish update with tf_optimizer
-                if self.freeze_epoch < 0 or self.freeze_epoch > epoch:
-                  self.scaler.step(self.tf_optimizer)
-                  self.tf_optimizer.zero_grad()
-                  self.scaler.update()
+                self.scaler.step(self.tf_optimizer)
+                self.tf_optimizer.zero_grad()
+                self.scaler.update()
 
                 self.xfc_scheduler.step()
                 self.tf_scheduler.step()
