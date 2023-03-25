@@ -1096,12 +1096,11 @@ class PrecEvaluator():
 
 
 class PreTokBertDataset(torch.utils.data.Dataset):
-    def __init__(self, tokenization_folder, X_Y, num_points, max_len, shorty=None, doc_type='trn', iter_mode='pointwise'):
+    def __init__(self, tokenization_folder, X_Y, num_points, max_len, doc_type='trn', iter_mode='pointwise'):
         self.num_points = num_points
         self.max_len = max_len
         self.iter_mode = iter_mode
         self.labels = X_Y
-        self.shorty = shorty
         self.start =  True
         self.tokenization_folder = tokenization_folder
         self.doc_type = doc_type
@@ -1131,104 +1130,9 @@ class PreTokBertDataset(torch.utils.data.Dataset):
         return self.num_points
 
 
-class BertDataset(torch.utils.data.Dataset):
-
-    def __init__(self, point_texts, label_texts, labels, shorty=None, tokenizer_type='roberta-base', maxsize=512, data_root_dir=None):
-        self.point_texts = point_texts
-        self.label_texts = label_texts
-        self.labels      = labels
-        self.shorty      = shorty
-        self.merge_fts_func = bert_fts_batch_to_tensor
-
-        assert len(point_texts) == labels[0].shape[0], f'length of point texts ({len(point_texts)}) should be same as num rows of label correlation matrix ({labels[0].shape[0]})'
-        assert len(label_texts) == labels[0].shape[1], f'length of label texts ({len(label_texts)}) should be same as num cols of label correlation matrix ({labels[0].shape[1]})'
-        
-        print("------ Some stats about the dataset ------")
-        print(f'Num points : {len(point_texts)}')
-        print(f'Num labels : {len(label_texts)}')
-        print("------------------------------------------", end='\n\n')
-
-        self.num_Y = self.labels[0].shape[1]
-        self.num_X = self.labels[0].shape[0]
-        
-        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_type, do_lower_case=True)
-        self.data_dir = f'{data_root_dir}/{tokenizer_type}_{maxsize}'
-        try:
-            print(f'trying to load pre-tokenized files from {self.data_dir} ...')
-            self.point_encoded_dict = {'input_ids': np.load(f'{self.data_dir}/point_input_ids_{self.num_X}.npy'),
-                                       'attention_mask': np.load(f'{self.data_dir}/point_attention_mask_{self.num_X}.npy')}
-            self.label_encoded_dict = {'input_ids': np.load(f'{self.data_dir}/label_input_ids_{self.num_Y}.npy'),
-                                       'attention_mask': np.load(f'{self.data_dir}/label_attention_mask_{self.num_Y}.npy')}
-            print(f'successfully loaded pre-tokenized files from {self.data_dir}')
-        except:
-            print(f'unable to load pre-tokenized files from {self.data_dir}')
-            print(f'creating tokenized files from raw texts...')
-            
-            start=time.time(); self.point_encoded_dict = self.convert(point_texts, maxsize); end=time.time()
-            print(f'tokeinized points in {"%.2f"%(end-start)} s')
-            start=time.time(); self.label_encoded_dict = self.convert(label_texts, maxsize); end=time.time()
-            print(f'tokeinized labels in {"%.2f"%(end-start)} s')
-            
-            if not data_root_dir is None:
-                print(f'saving tokenized files in {self.data_dir}')
-                os.makedirs(self.data_dir, exist_ok=True)
-                np.save(f'{self.data_dir}/point_input_ids_{self.num_X}.npy', self.point_encoded_dict['input_ids'])
-                np.save(f'{self.data_dir}/point_attention_mask_{self.num_X}.npy', self.point_encoded_dict['attention_mask'])
-                np.save(f'{self.data_dir}/label_input_ids_{self.num_Y}.npy', self.label_encoded_dict['input_ids'])
-                np.save(f'{self.data_dir}/label_attention_mask_{self.num_Y}.npy', self.label_encoded_dict['attention_mask'])
-
-        
-    def convert(self, corpus, maxsize=512, bsz=4096):
-        max_len = max(min(max([len(sen) for sen in corpus]), maxsize), 16)
-        encoded_dict = {'input_ids': [], 'attention_mask': []}
-        
-        for ctr in tqdm(range(0, len(corpus), bsz)):
-            temp = self.tokenizer.batch_encode_plus(
-                    corpus[ctr:min(ctr+bsz, len(corpus))],  # Sentence to encode.
-                    add_special_tokens = True,              # Add '[CLS]' and '[SEP]'
-                    max_length = max_len,                   # Pad & truncate all sentences.
-                    padding = 'max_length',
-                    return_attention_mask = True,           # Construct attn. masks.
-                    return_tensors = 'np',                  # Return numpy tensors.
-                    truncation=True
-            )
-            encoded_dict['input_ids'].append(temp['input_ids'])
-            encoded_dict['attention_mask'].append(temp['attention_mask'])
-            
-        encoded_dict['input_ids'] = np.vstack(encoded_dict['input_ids'])
-        encoded_dict['attention_mask'] = np.vstack(encoded_dict['attention_mask'])
-        return encoded_dict
-
-    def __getitem__(self, index):
-        return index
-    
-    def get_fts(self, index, source='label'):
-        if source == 'label':
-            encoded_dict = self.label_encoded_dict
-        elif source == 'point':
-            encoded_dict = self.point_encoded_dict
-            
-        if isinstance(index, int) or isinstance(index, np.int32):
-            return {'input_ids': encoded_dict['input_ids'][index], 
-                    'attention_mask': encoded_dict['attention_mask'][index]}
-        else:
-            return bert_fts_batch_to_tensor(encoded_dict['input_ids'][index],
-                                            encoded_dict['attention_mask'][index])
-
-    @property
-    def num_instances(self):
-        return self.labels[0].shape[0]
-
-    @property
-    def num_labels(self):
-        return self.labels[0].shape[1]
-    
-    def __len__(self):
-        return self.labels[0].shape[0]
-
 # changed to handle hybrid data-model parallel architecture
 class XCCollator():
-    def __init__(self, padded_numy, dataset, my_rank, world_size, num_slices, slice_size, accum, xfcz, train, yfull):
+    def __init__(self, padded_numy, dataset, my_rank, world_size, accum, xfcz, train, yfull):
         self.numy = padded_numy
         self.dataset = dataset
         self.rank = my_rank
@@ -1236,11 +1140,6 @@ class XCCollator():
         self.startlabel = self.rank*self.numy//world_size
         self.endlabel = (self.rank+1)*self.numy//world_size
         self.test = not train
-        self.slice_size = slice_size
-        self.slice_start = 0
-        self.slice_end = slice_size
-        self.cur_slice = 0
-        self.num_slices = num_slices
         self.accum = accum
         self.xfcz = xfcz # xfc batch size with accum
         self.yfull = yfull
@@ -1266,12 +1165,7 @@ class XCCollator():
            return {'batch_size': bsz, 'numy': self.numy,  'xfts': self.dataset.get_fts(ids, 'point') } 
 
         # labels has full batch size but only the partial set of labels that each node is responsible for
-        #csr_coo  =  self.dataset.labels[full_ids].tocsc()[:,self.startlabel:self.endlabel].tocoo()
-        if (full_ids[0] >= self.slice_end) and (self.cur_slice < self.num_slices - 1):
-             self.cur_slice += 1
-             self.slice_start = self.slice_end
-             self.slice_end += self.slice_size
-        csr_coo  =  self.dataset.labels[self.cur_slice][full_ids-self.slice_start].tocoo()
+        csr_coo  =  self.dataset.labels[0][full_ids].tocoo()
         #print(self.rank,ids[0],self.dataset.labels[full_ids],csr_coo.col)
         pos_tensor = torch.LongTensor(np.stack((csr_coo.row, csr_coo.col)))
         index_tensor = None
@@ -1289,7 +1183,7 @@ class XCCollator():
             i = 0
             while (end_bs <= bsz):
                 temp_ids = full_ids[start_bs:end_bs]
-                index_tensor[i+1] = index_tensor[i] + self.dataset.labels[self.cur_slice][temp_ids-self.slice_start].nnz
+                index_tensor[i+1] = index_tensor[i] + self.dataset.labels[0][temp_ids].nnz
                 pos_tensor[0,index_tensor[i]:index_tensor[i+1]] -= start_bs
                 #print(full_ids[0],i,index_tensor[i],len(csr_coo.row),flush=True)
                 i += 1
@@ -1301,7 +1195,6 @@ class XCCollator():
 
         batch_data = {'batch_size': bsz,
                       'numy': self.numy,
-                      'shorty': None,
                       'z': pos_tensor, #using sparse values instead of 'y'
                       'i': index_tensor,
                       'y': None,
@@ -1311,11 +1204,9 @@ class XCCollator():
                       'xfts': self.dataset.get_fts(ids, 'point')
                      }
             
-        if self.dataset.shorty is not None:
-            batch_data['shorty'] = csr_to_pad_tensor(self.dataset.shorty[ids], self.numy)
             
         if self.yfull:
-            batch_data['y'] = csr_to_pad_tensor(self.dataset.labels[self.cur_slice][full_ids-self.slice_start], self.numy//self.world_size)
+            batch_data['y'] = csr_to_pad_tensor(self.dataset.labels[0][full_ids], self.numy//self.world_size)
             #batch_data['yfull'] = torch.zeros(bsz, self.numy+1).scatter_(1, batch_data['y']['inds'], batch_data['y']['vals'])[:, :-1]
                 
         return batch_data

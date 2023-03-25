@@ -18,24 +18,6 @@ def seed_worker(worker_id):
     random.seed(worker_seed)
     #print(torch.utils.data.get_worker_info())
 
-# Chunk the data into slices and fix randomness within a slice
-class MySubsetRandomSampler(torch.utils.data.Sampler[int]):
-    def __init__(self, total, num_slices, slice_size, generator=None):
-        self.total = total
-        self.part = slice_size
-        self.num_slices = num_slices
-        self.generator = generator
-        self.start = 0
-        self.rem = total - slice_size*num_slices
-    def __iter__(self):
-        for i in range(self.num_slices-1):
-            yield from (self.start + torch.randperm(self.part, generator=self.generator)).tolist()
-            self.start += self.part
-        yield from (self.start + torch.randperm(self.part+self.rem, generator=self.generator)).tolist()
-        self.start = 0
-    def __len__(self):
-        return self.total   
-
 def start(device, ngpus_per_node, args):
   # set seed
   torch.manual_seed(args.seed)
@@ -56,7 +38,7 @@ def start(device, ngpus_per_node, args):
     args.rank = my_rank = 0
 
 #   root_dir = '/home/jainvidit/xc'
-  root_dir = '/home/t-japrakash/xc'
+  root_dir = '/home/someh/xc_v'
   if not os.path.exists(root_dir):
       root_dir = '/home/jainvidit/xc'
     
@@ -145,56 +127,37 @@ def start(device, ngpus_per_node, args):
 
   #Dataloaders
   num_points = trn_X_Y.shape[0]
-  if args.slice > 1:
-    # all elements of a batch should fit in a slice
-    slice_size = (num_points//(args.batch_size*args.world_size*args.slice))*args.batch_size*args.world_size
-  else:
-    slice_size = num_points 
+  
   start_label = my_rank*numy_per_gpu
   end_label = (my_rank+1)*numy_per_gpu
   if args.pre_tok:
       # restrict the train dataset to only the labels that this rank is responsible for
-      start_row = 0
-      end_row = slice_size
-      trn_X_Y_list = []
-      for i in range(args.slice-1):
-        trn_X_Y_list.append(trn_X_Y[start_row:end_row].tocsc()[:,start_label:end_label].tocsr()) 
-        start_row = end_row
-        end_row += slice_size
-      end_row = num_points
-      trn_X_Y_list.append(trn_X_Y[start_row:end_row].tocsc()[:,start_label:end_label].tocsr()) 
+      trn_X_Y_list = [trn_X_Y.tocsc()[:,start_label:end_label].tocsr()] 
       trn_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', trn_X_Y_list, num_points, args.maxlen, doc_type='trn')
       tst_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', [tst_X_Y], tst_shape_0, args.maxlen, doc_type='tst')
       #tst_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', [tst_X_Y], tst_shape_0, args.maxlen, doc_type='trn')
-  else:
-      OUT_DIR = f'{results_dir}/{dataset}'
-      Y = [x.strip() for x in open(f'{DATA_DIR}/raw/Y.txt').readlines()]
-      trnX = [x.strip() for x in open(f'{DATA_DIR}/raw/trn_X.txt').readlines()]
-      tstX = [x.strip() for x in open(f'{DATA_DIR}/raw/tst_X.txt').readlines()]
-      #trn_X_Y = trn_X_Y.tocsc()[:,start_label:end_label].tocsr()
-      trn_dataset = BertDataset(trnX, Y, [trn_X_Y], maxsize=args.maxlen, tokenizer_type=args.tf,data_root_dir=OUT_DIR)
-      tst_dataset = BertDataset(tstX, Y, [tst_X_Y], maxsize=args.maxlen, tokenizer_type=args.tf,data_root_dir=OUT_DIR)
+  
 
   gbsz = args.batch_size*args.world_size # everyone gets all labels
   num_workers = 4
   trn_loader = torch.utils.data.DataLoader( 
     trn_dataset,
-    sampler=MySubsetRandomSampler(num_points, args.slice, slice_size) if args.slice > 1 else None,
+    sampler=None,
     batch_size=gbsz,
     num_workers=num_workers,
-    collate_fn=XCCollator(padded_numy, trn_dataset, my_rank, args.world_size, args.slice, slice_size, args.accum, gbsz//args.accum, True, args.default_impl),
+    collate_fn=XCCollator(padded_numy, trn_dataset, my_rank, args.world_size, args.accum, gbsz//args.accum, True, args.default_impl),
     worker_init_fn=seed_worker, # need workers to use same seed so that batches are coordinated
-    persistent_workers = False if ((args.slice > 1)  or (num_workers < 1)) else True,
-    shuffle=False if args.slice > 1 else True,
+    persistent_workers = False if (num_workers < 1) else True,
+    shuffle=True,
     pin_memory=False)
 
   tst_loader = torch.utils.data.DataLoader( 
     tst_dataset, 
     batch_size=gbsz,
     num_workers=num_workers,
-    collate_fn=XCCollator(padded_numy, tst_dataset, my_rank, args.world_size, args.slice, slice_size, args.accum, gbsz//args.accum, False, args.default_impl),
+    collate_fn=XCCollator(padded_numy, tst_dataset, my_rank, args.world_size, args.accum, gbsz//args.accum, False, args.default_impl),
     worker_init_fn=seed_worker, # need workers to use same seed so that batches are coordinated
-    persistent_workers = False if ((args.slice > 1)  or (num_workers < 1)) else True,
+    persistent_workers = False if (num_workers < 1) else True,
     shuffle=False,
     pin_memory=False)
 
@@ -209,7 +172,7 @@ def start(device, ngpus_per_node, args):
     
   # whether or not to use ngame pretrained encoder (which is M1 in the ngame paper) as initialization.
   if args.use_ngame_encoder: 
-    path_to_ngame_model = f"/blob/ngame_pretrained_models/{args.dataset}/state_dict.pt"
+    path_to_ngame_model = f"/home/someh/xc_v/ngame_pretrained_models/{args.dataset}/state_dict.pt"
     print("Using NGAME pretrained encoder. Loading from {}".format(path_to_ngame_model))
 
     new_state_dict = OrderedDict()
@@ -320,8 +283,6 @@ def main():
                         help='Initialize weights for xfc layer using label embeddings of encoder; needs pre_tok')
     parser.add_argument('--batch-size', type=int, default=8, metavar='N',
                         help='input per GPU batch size for training (default: 8)')
-    parser.add_argument('--slice', type=int, default=1,
-                        help='Slice the dataset for perf (default: 6)')
     parser.add_argument('--freeze-epoch', type=int, default=-1, # preliminary, unoptimized version -- TBD: compute embeddings once, and remove one backward matmul
                         help='Freeze encoder starting from freeze-epoch (default: no-freezing) ')
     parser.add_argument('--epochs', type=int, default=50, metavar='N',
@@ -385,8 +346,8 @@ def main():
     if args.bias and (args.custom_cuda or args.default_impl):
         print("XFC bias not supported yet for default_impl or custom_cuda kernels: TBD")
         exit(-1)
-    if (not args.pre_tok) and (args.tf == "custom" or args.world_size > 1 or args.slice > 1 or args.init_weights):
-        print("args.tf == custom or args.world_size > 1 or args.slice > 1 or args.init_weights requires args.pre_tok for now")
+    if (not args.pre_tok) and (args.tf == "custom" or args.world_size > 1 or args.init_weights):
+        print("args.tf == custom or args.world_size > 1 or args.init_weights requires args.pre_tok for now")
         print("Use python -u CreateTokenizedFiles.py --data-dir Datasets/XXX --max-length YYY--tokenizer-type ZZZ to pretokenize data")
         exit(-1)
 
