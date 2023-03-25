@@ -102,11 +102,9 @@ def start(device, ngpus_per_node, args):
   end_label = (my_rank+1)*numy_per_gpu
   if args.pre_tok:
       # restrict the train dataset to only the labels that this rank is responsible for
-      trn_X_Y_list = [trn_X_Y.tocsc()[:,start_label:end_label].tocsr()] 
-      trn_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', trn_X_Y_list, num_points, args.maxlen, doc_type='trn')
-      tst_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', [tst_X_Y], tst_shape_0, args.maxlen, doc_type='tst')
-      #tst_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', [tst_X_Y], tst_shape_0, args.maxlen, doc_type='trn')
-  
+      trn_X_Y_rank = trn_X_Y.tocsc()[:,start_label:end_label].tocsr()
+      trn_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', trn_X_Y_rank, num_points, args.maxlen, doc_type='trn')
+      tst_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', tst_X_Y, tst_shape_0, args.maxlen, doc_type='tst')
 
   gbsz = args.batch_size*args.world_size # everyone gets all labels
   num_workers = 4
@@ -165,9 +163,7 @@ def start(device, ngpus_per_node, args):
   model = model.cuda()
   #model.load()
 
-  if args.world_size > 1:
-    if not args.nosync:
-      model.embed = DDP(model.embed, device_ids=[my_rank%ngpus_per_node])
+#   model.embed = DDP(model.embed, device_ids=[my_rank%ngpus_per_node])
 
   if args.default_impl:
       trn_loss = BCELossMultiNodeDefault(model)
@@ -190,7 +186,7 @@ def start(device, ngpus_per_node, args):
           tf_optimizer_params= {'lr': args.lr2, 'eps': 1e-06, 'set_grad_none': True, 'bias_correction': True, 'weight_decay': args.wd2},
           epochs = args.epochs, warmup_steps = args.warmup,
           evaluator=evaluator,
-          evaluation_epochs=5)
+          evaluation_epochs=1)
 
 def main():
     # Training settings
@@ -237,8 +233,6 @@ def main():
                         help='enable fp32 for encoder (default fp16)')
     parser.add_argument('--fp16xfc', action='store_true', default=False,
                         help='enable fp16 for xfc layer (default fp32)')
-    parser.add_argument('--nosync', action='store_true', default=False,
-                        help='Skip allreduce of gradients for encoders, surprising this works fine!')
     parser.add_argument('--noloss', action='store_true', default=False,
                         help='Skip loss computation (only accuracy is valid), saving memory/compute at extreme scale')
     parser.add_argument('--checkpoint-resume', type=str, default='',
@@ -258,11 +252,6 @@ def main():
     parser.add_argument('--use-ngame-encoder', action='store_true', default=False,
                         help='Use NGAME pretrained encoder as initialization point for trainings')
     args = parser.parse_args()
-
-    if (not args.pre_tok) and (args.tf == "custom" or args.world_size > 1 or args.init_weights):
-        print("args.tf == custom or args.world_size > 1 or args.init_weights requires args.pre_tok for now")
-        print("Use python -u CreateTokenizedFiles.py --data-dir Datasets/XXX --max-length YYY--tokenizer-type ZZZ to pretokenize data")
-        exit(-1)
 
     print(args)
  
