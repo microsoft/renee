@@ -1,9 +1,8 @@
 
 #run below cmd first
-#conda activate py38
+#conda activate rpr
 
 pip install torch==1.12.1+cu113 -f https://download.pytorch.org/whl/torch_stable.html
-# conda install -y pytorch torchvision torchaudio cudatoolkit=11.1 -c pytorch -c nvidia
 
 
 pip install transformers
@@ -29,12 +28,4 @@ cd ..
 
 
 pip install numba
-
-# git clone -b python_bindings_quantized https://github.com/microsoft/DiskANN.git
-# Make sure that MKL is installed: see repo instructions
-# cd DiskANN
-# sudo apt install cmake g++ libaio-dev libgoogle-perftools-dev clang-format-4.0 libboost-dev
-# mkdir build && cd build && cmake .. && make -j 
-# cd ../python
-# pip install -e .
 
