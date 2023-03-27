@@ -1,5 +1,5 @@
 import torch
-from res import * 
+import xclib.data.data_utils as data_utils
 from dl_base import *
 import numpy as np
 import scipy.sparse as sp
@@ -8,7 +8,7 @@ import argparse
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
-from transformers import RobertaModel, AutoModel, AutoConfig
+from transformers import AutoModel
 from collections import OrderedDict
 #from torch.profiler import profile, record_function, ProfilerActivity
 
@@ -54,8 +54,8 @@ def start(device, ngpus_per_node, args):
 
   # Load Data
   DATA_DIR = f'{root_dir}/Datasets/{dataset}'
-  trn_X_Y = read_sparse_mat(f'{DATA_DIR}/trn_X_Y.txt')
-  tst_X_Y = read_sparse_mat(f'{DATA_DIR}/tst_X_Y.txt')
+  trn_X_Y = data_utils.read_sparse_file(f'{DATA_DIR}/trn_X_Y.txt')
+  tst_X_Y = data_utils.read_sparse_file(f'{DATA_DIR}/tst_X_Y.txt')
   tst_shape_0, tst_shape_1 = tst_X_Y.shape[0], tst_X_Y.shape[1]
   if my_rank > 0: # only rank 0 does eval 
       tst_X_Y = None
@@ -100,11 +100,11 @@ def start(device, ngpus_per_node, args):
   
   start_label = my_rank*numy_per_gpu
   end_label = (my_rank+1)*numy_per_gpu
-  if args.pre_tok:
-      # restrict the train dataset to only the labels that this rank is responsible for
-      trn_X_Y_rank = trn_X_Y.tocsc()[:,start_label:end_label].tocsr()
-      trn_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', trn_X_Y_rank, num_points, args.maxlen, doc_type='trn')
-      tst_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', tst_X_Y, tst_shape_0, args.maxlen, doc_type='tst')
+
+  # restrict the train dataset to only the labels that this rank is responsible for
+  trn_X_Y_rank = trn_X_Y.tocsc()[:,start_label:end_label].tocsr()
+  trn_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', trn_X_Y_rank, num_points, args.maxlen, doc_type='trn')
+  tst_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', tst_X_Y, tst_shape_0, args.maxlen, doc_type='tst')
 
   gbsz = args.batch_size*args.world_size # everyone gets all labels
   num_workers = 4
@@ -163,7 +163,7 @@ def start(device, ngpus_per_node, args):
   model = model.cuda()
   #model.load()
 
-#   model.embed = DDP(model.embed, device_ids=[my_rank%ngpus_per_node])
+  model.embed = DDP(model.embed, device_ids=[my_rank%ngpus_per_node])
 
   if args.default_impl:
       trn_loss = BCELossMultiNodeDefault(model)
@@ -186,15 +186,14 @@ def start(device, ngpus_per_node, args):
           tf_optimizer_params= {'lr': args.lr2, 'eps': 1e-06, 'set_grad_none': True, 'bias_correction': True, 'weight_decay': args.wd2},
           epochs = args.epochs, warmup_steps = args.warmup,
           evaluator=evaluator,
-          evaluation_epochs=1)
+          evaluation_epochs=5)
 
 def main():
     # Training settings
     parser = argparse.ArgumentParser(description='BERT XFC')
     parser.add_argument('--dataset', type=str, default='LF-Wikipedia-500K', metavar='N',
                         help='name of the dataset')
-    parser.add_argument('--norm', action='store_true', default=False,
-                        help='Add unit norm constraint for xfc weights')
+  
     parser.add_argument('--custom-cuda', action='store_true', default=False,
                         help='Use custom_cuda kernels for fp16 training. Please ensure the custom kernels are optimized for the matmul sizes!!!')
     parser.add_argument('--default-impl', action='store_true', default=False,

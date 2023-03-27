@@ -1,6 +1,3 @@
-from transformers import AutoTokenizer
-import time
-import pickle as pkl
 import torch
 import numpy as np
 import os
@@ -9,18 +6,14 @@ import torch.nn as nn
 from collections import OrderedDict
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
-import torch.multiprocessing as mp
 from tqdm.autonotebook import tqdm, trange
 from typing import List, Dict, Tuple, Iterable, Type, Union, Callable
 import math
 import random
-import logging
-logger = logging.getLogger(__name__)
 
 import transformers
 from torch.nn.parameter import Parameter
 import torch.nn.functional as F
-from transformers import AutoModel, AutoConfig, RobertaModel
 from scipy.sparse import csr_matrix, save_npz
 import apex
 import sys
@@ -171,7 +164,6 @@ class GenericModel(nn.Sequential):
         self.accum = args.accum 
         self.compute_loss = not args.noloss
         self.checkpoint_resume = args.checkpoint_resume
-        self.norm = args.norm
         self.custom_cuda = args.custom_cuda
         self.default_impl = args.default_impl
         self.default_loss = nn.BCEWithLogitsLoss(reduction='sum')
@@ -296,8 +288,7 @@ class GenericModel(nn.Sequential):
                      self.tf_optimizer.zero_grad()
                      self.xfc_scheduler.step()
                      self.tf_scheduler.step()
-                     if self.norm:
-                        self.xfc_weight.data *= 1.0/torch.norm(self.xfc_weight.data,dim=1,keepdim=True)
+                    
                      training_steps += 1
                     continue
 
@@ -349,10 +340,7 @@ class GenericModel(nn.Sequential):
                     self.xfc_optimizer.step()
                     self.xfc_weight.grad = None
                    
-                    # normalize weights
-                    if self.norm:
-                        #self.xfc_weight.data -= torch.mean(self.xfc_weight.data,dim=0,keepdim=True)
-                        self.xfc_weight.data *= 1.0/torch.norm(self.xfc_weight.data,dim=1,keepdim=True)
+                   
 
                 # now do the backward for the embed layers
                 per_gpu_bsz = bsz//self.world_size
@@ -373,13 +361,7 @@ class GenericModel(nn.Sequential):
                   total_loss += loss                       
                   training_steps += 1
                 self.count += 1
-                ''' 
-                if count % 100 == 0 and self.rank == 0:
-                  print(loss.item()," Total loss: ", total_loss.item(), " Scale: ", self.scaler.get_scale())
-                  sys.stdout.flush()
-                count += 1
-                '''
-
+       
                 if max_grad_norm > 0: 
                     self.scaler.unscale_(self.tf_optimizer)
                     torch.nn.utils.clip_grad_norm_(loss_model.parameters(), max_grad_norm)
@@ -808,10 +790,6 @@ class FullPredictor():
                     if start_bs < bsz and end_bs > bsz:
                         end_bs = bsz
                         xfcz = end_bs - start_bs
-
-        if False and model.rank == 0:
-            np.savetxt("pred.txt",inds,fmt="%d")
-            np.savetxt("logits.txt",data,fmt="%.4e")
 
         if model.rank == 0:
             return csr_matrix((data.ravel(), inds.ravel(), indptr), (datalen, numy))
