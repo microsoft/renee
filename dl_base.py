@@ -288,7 +288,6 @@ class GenericModel(nn.Sequential):
                      self.tf_optimizer.zero_grad()
                      self.xfc_scheduler.step()
                      self.tf_scheduler.step()
-                    
                      training_steps += 1
                     continue
 
@@ -340,7 +339,6 @@ class GenericModel(nn.Sequential):
                     self.xfc_optimizer.step()
                     self.xfc_weight.grad = None
                    
-                   
 
                 # now do the backward for the embed layers
                 per_gpu_bsz = bsz//self.world_size
@@ -361,7 +359,7 @@ class GenericModel(nn.Sequential):
                   total_loss += loss                       
                   training_steps += 1
                 self.count += 1
-       
+
                 if max_grad_norm > 0: 
                     self.scaler.unscale_(self.tf_optimizer)
                     torch.nn.utils.clip_grad_norm_(loss_model.parameters(), max_grad_norm)
