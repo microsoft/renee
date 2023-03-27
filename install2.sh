@@ -21,11 +21,16 @@ cd pyxclib
 python3 setup.py install  
 cd ..
 
+pip install scikit-learn
+
+## Need only for apex optimizers
 #git clone https://github.com/NVIDIA/apex
 cd apex
 pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./
 cd ..
 
 
-pip install numba
-
+## Need only for custom-cuda
+#git clone https://github.com/NVIDIA/cutlass.git
+pip install cutlass
+python3 setup.py install

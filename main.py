@@ -36,24 +36,17 @@ def start(device, ngpus_per_node, args):
   else:                                  # single node, single gpu training
     args.rank = my_rank = 0
 
-#   root_dir = '/home/jainvidit/xc'
-  root_dir = '/home/someh/xc_v'
-  if not os.path.exists(root_dir):
-      root_dir = '/home/jainvidit/xc'
-    
-    
+  dataset = args.data_dir.split('/')[-1]
   results_dir = f'./Results/Bert-XC/'
+  expname = args.expname
   os.makedirs(results_dir, exist_ok=True)
-  dataset=args.dataset
 
   device = f'cuda:{nb_id}'
-  expname = args.expname
-
   torch.cuda.set_device(device)
 
 
   # Load Data
-  DATA_DIR = f'{root_dir}/Datasets/{dataset}'
+  DATA_DIR = args.data_dir
   trn_X_Y = data_utils.read_sparse_file(f'{DATA_DIR}/trn_X_Y.txt')
   tst_X_Y = data_utils.read_sparse_file(f'{DATA_DIR}/tst_X_Y.txt')
   tst_shape_0, tst_shape_1 = tst_X_Y.shape[0], tst_X_Y.shape[1]
@@ -100,7 +93,6 @@ def start(device, ngpus_per_node, args):
   
   start_label = my_rank*numy_per_gpu
   end_label = (my_rank+1)*numy_per_gpu
-
   # restrict the train dataset to only the labels that this rank is responsible for
   trn_X_Y_rank = trn_X_Y.tocsc()[:,start_label:end_label].tocsr()
   trn_dataset = PreTokBertDataset(f'{DATA_DIR}/{tokenizer_type}-{args.maxlen}', trn_X_Y_rank, num_points, args.maxlen, doc_type='trn')
@@ -138,16 +130,16 @@ def start(device, ngpus_per_node, args):
 
     
   # whether or not to use ngame pretrained encoder (which is M1 in the ngame paper) as initialization.
-  if args.use_ngame_encoder: 
-    path_to_ngame_model = f"/home/someh/xc_v/ngame_pretrained_models/{args.dataset}/state_dict.pt"
+  if args.use_ngame_encoder!='': 
+#     path_to_ngame_model = f"/home/someh/xc_v/ngame_pretrained_models/{args.dataset}/state_dict.pt"
+    path_to_ngame_model = args.use_ngame_encoder
     print("Using NGAME pretrained encoder. Loading from {}".format(path_to_ngame_model))
 
     new_state_dict = OrderedDict()
     old_state_dict = torch.load(path_to_ngame_model, map_location="cpu")
 
     for k, v in old_state_dict.items():
-        name = k.replace("embedding_labels.encoder.transformer.0.auto_model.", "") # for Academic datasets
-        # name = k.replace("encoder.encoder.transformer.0.auto_model.", "") # for EPM-20M
+        name = k.replace("embedding_labels.encoder.transformer.0.auto_model.", "")
         new_state_dict[name] = v
 
     print(encoder_.load_state_dict(new_state_dict, strict=True))  
@@ -186,14 +178,15 @@ def start(device, ngpus_per_node, args):
           tf_optimizer_params= {'lr': args.lr2, 'eps': 1e-06, 'set_grad_none': True, 'bias_correction': True, 'weight_decay': args.wd2},
           epochs = args.epochs, warmup_steps = args.warmup,
           evaluator=evaluator,
-          evaluation_epochs=5)
+          evaluation_epochs=1)
 
 def main():
     # Training settings
     parser = argparse.ArgumentParser(description='BERT XFC')
-    parser.add_argument('--dataset', type=str, default='LF-Wikipedia-500K', metavar='N',
-                        help='name of the dataset')
-  
+    parser.add_argument('--data-dir', type=str, default='',
+                        help='Path to dataset directory')
+#     parser.add_argument('--dataset', type=str, default='LF-Wikipedia-500K', metavar='N',
+#                         help='name of the dataset')
     parser.add_argument('--custom-cuda', action='store_true', default=False,
                         help='Use custom_cuda kernels for fp16 training. Please ensure the custom kernels are optimized for the matmul sizes!!!')
     parser.add_argument('--default-impl', action='store_true', default=False,
@@ -248,8 +241,10 @@ def main():
                         help='max seq length for transformer')
     parser.add_argument('--tf', type=str, default='distilbert-base-uncased', metavar='N',
                         help='encoder transformer type')
-    parser.add_argument('--use-ngame-encoder', action='store_true', default=False,
-                        help='Use NGAME pretrained encoder as initialization point for trainings')
+#     parser.add_argument('--use-ngame-encoder', action='store_true', default=False,
+#                         help='Use NGAME pretrained encoder as initialization point for trainings')
+    parser.add_argument('--use-ngame-encoder', type=str, default='',
+                        help='Path to NGAME pretrained encoder as initialization point for trainings')
     args = parser.parse_args()
 
     print(args)
