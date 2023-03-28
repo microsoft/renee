@@ -1,7 +1,4 @@
-
-conda create -y -n rpr python=3.8
+conda create -y -n renee python=3.8
 
 conda init bash
 exec bash
-
-#conda activate py38
