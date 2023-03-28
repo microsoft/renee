@@ -4,9 +4,9 @@ For a dataset, create tokenized files in the folder `{tokenizer-type}-{maxlen}` 
 Sample usage: 
 
 python -W ignore -u CreateTokenizedFiles.py \
---data-dir Datasets/LF-AmazonTitles-131K \
+--data-dir /home/t-japrakash/xc/Datasets/LF-AmazonTitles-131K \
 --max-length 32 \
---tokenizer-type roberta-base \
+--tokenizer-type bert-base-uncased \
 --tokenize-label-texts
 
 """
