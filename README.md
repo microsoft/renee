@@ -14,7 +14,14 @@ Run the below command, this will create a new conda environment with all the dep
 
 ```bash
 bash install1.sh
+conda activate renee
+bash install2.sh
 ```
+
+## Data Preparation
+
+
+
 
 ## Training sripts
 
@@ -38,6 +45,8 @@ python main.py \
 --expname debug
 ```
 To change hyperparameters, you can refer to the various arguments provided in `main.py` file or you can do `python main.py --help` to list out the all the arguments.
+
+Training commands for other datasets are provided in `scripts/train_commands.md`.
 
 ## Citation
 

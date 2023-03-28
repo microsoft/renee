@@ -16,7 +16,7 @@ pip install --no-binary :all: nmslib
 pip install pybind11==2.6.1 fasttext sklearn cython numpy==1.20.3 scikit-learn
 
 
-#git clone https://github.com/kunaldahiya/pyxclib
+git clone https://github.com/kunaldahiya/pyxclib
 cd pyxclib
 python3 setup.py install  
 cd ..
@@ -24,13 +24,13 @@ cd ..
 pip install scikit-learn
 
 ## Need only for apex optimizers
-#git clone https://github.com/NVIDIA/apex
+git clone https://github.com/NVIDIA/apex
 cd apex
 pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./
 cd ..
 
 
 ## Need only for custom-cuda
-#git clone https://github.com/NVIDIA/cutlass.git
+git clone https://github.com/NVIDIA/cutlass.git
 pip install cutlass
 python3 setup.py install
