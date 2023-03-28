@@ -20,12 +20,41 @@ bash install2.sh
 
 ## Data Preparation
 
+A dataset folder should have the following directory structure. Below we show it for LF-AmazonTitles-131K dataset:
 
+```bash
+LF-AmazonTitles-131K/
+    trn_X_Y.txt # contains mappings from train IDs to label IDs
+    trn_filter_labels.txt # this contains train reciprocal pairs to be ignored in evaluation
+    tst_X_Y.txt # contains mappings from test IDs to label IDs
+    tst_filter_labels.txt # this contains test reciprocal pairs to be ignored in evaluation
+    trn_X.txt # each line contains the raw input train text, this needs to be tokenized
+    tst_X.txt # each line contains the raw input test text, this needs to be tokenized
+    Y.txt # each line contains the raw label text, this needs to be tokenized
+```
 
+To tokenize the raw train, test and label texts, we can use the following command (change the path of the dataset folder accordingly):
+```bash
+python -W ignore -u utils/CreateTokenizedFiles.py \
+--data-dir xc/Datasets/LF-AmazonTitles-131K \
+--max-length 32 \
+--tokenizer-type bert-base-uncased \
+--tokenize-label-texts
+```
 
-## Training sripts
+To create a dataset having label-text augmentation, we can use the following command:
+```bash
+python utils/CreateAugData.py \
+--data-dir xc/Datasets/LF-AmazonTitles-131K \
+--tokenization-folder bert-base-uncased-32 \
+--max-len 32
+```
 
-Train Renee on LF-AmazonTitles-131K dataset, you can use the following command (make sure you modify `data-dir`, `use-ngame-encoder` accordingly)
+Above command will create a folder named `xc/Datasets/LF-AmazonTitles-131K-Aug`, now we can refer to this dataset directory in our training script to train with label-text augmentation.
+
+## Training
+
+Train Renee on LF-AmazonTitles-131K dataset using label-text augmentation, you can use the following command (make sure you modify `data-dir`, `use-ngame-encoder` accordingly; keep in mind that you need to generate label-text augmentation dataset folder first, refer to Data Preparation section of README)
 ```bash
 python main.py \
 --epochs 100 \
@@ -53,9 +82,9 @@ Training commands for other datasets are provided in `scripts/train_commands.md`
 If you find our work/code useful in your research, please cite the following:
 
 ```bibtex
-@article{Renee2023,
+@article{renee_2023,
   title={Renee: End-to-end training of extreme classification models},
-  author={Jain, Vidit and Prakash, Jatin and Saini, Deepak and Jiao, Jain and Ramjee, Ramachandran and Varma, Manik},
+  author={Jain, Vidit and Prakash, Jatin and Saini, Deepak and Jiao, Jian and Ramjee, Ramachandran and Varma, Manik},
   journal={Proceedings of Machine Learning and Systems},
   year={2023}
 }
