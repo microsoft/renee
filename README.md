@@ -19,6 +19,7 @@ bash install2.sh
 ```
 
 ## Data Preparation
+You can download the datasets from the XML repo (http://manikvarma.org/downloads/XC/XMLRepository.html).
 
 A dataset folder should have the following directory structure. Below we show it for LF-AmazonTitles-131K dataset:
 
