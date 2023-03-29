@@ -1,11 +1,15 @@
-### All batch-sizes are intended for 16 GPU runs. If you are running the code on fewer GPUs, adjust the (per-gpu) batch size accordingly. For example, if you are running on 8 GPUs, double the (per-gpu) batch-size. 
+# Training scripts
 
-### In case the intended batch-size is unable to fit on the configuration being used, please make use of the --accum flag to enable gradient accumulation. 
+Below we provide sample train scripts for some of the datasets.
+
+> All batch-sizes are intended for 16 GPU runs. If you are running the code on fewer GPUs, adjust the (per-gpu) batch size accordingly. For example, if you are running on 8 GPUs, double the (per-gpu) batch-size. 
+
+> In case the intended `batch-size` is unable to fit on the configuration being used, please make use of the `--accum` flag to enable gradient accumulation. 
 
 
 ## non-Label Features Datasets
 
-#### AmazonTitles-670K
+AmazonTitles-670K:
 ```bash
 python main.py \
 --epochs 60 \
@@ -19,11 +23,10 @@ python main.py \
 --dropout 0.8 \
 --wd1 0.001 \
 --noloss \
---fp16xfc \
---expname debug
+--fp16xfc
 ```
 
-#### Amazon-670K
+Amazon-670K:
 ```bash
 python main.py \
 --epochs 70 \
@@ -37,15 +40,14 @@ python main.py \
 --dropout 0.8 \
 --wd1 0.001 \
 --noloss \
---fp16xfc \
---expname debug
+--fp16xfc
 ```
 
-#### AmazonTitles-3M
+AmazonTitles-3M
 
-#### Amazon-3M
+Amazon-3M
 
-#### Wiki-500K
+Wiki-500K
 ```bash
 python main.py \
 --epochs 100 \
@@ -59,14 +61,13 @@ python main.py \
 --dropout 0.75 \
 --wd1 0.001 \
 --noloss \
---fp16xfc \
---expname debug
+--fp16xfc
 ```
 
 
 ## Label Features Datasets
 
-#### LF-AmazonTitles-131K
+LF-AmazonTitles-131K
 ```bash
 python main.py \
 --epochs 100 \
@@ -81,11 +82,10 @@ python main.py \
 --wd1 1e-4 \
 --noloss \
 --fp16xfc \
---use-ngame-encoder ngame_pretrained_models/LF-AmazonTitles-131K/state_dict.pt \
---expname debug
+--use-ngame-encoder ngame_pretrained_models/LF-AmazonTitles-131K/state_dict.pt
 ```
 
-#### LF-Wikipedia-500K
+LF-Wikipedia-500K
 ```bash
 python main.py \
 --epochs 100 \
@@ -99,14 +99,13 @@ python main.py \
 --dropout 0.7 \
 --wd1 0.001 \
 --noloss \
---fp16xfc \
---expname debug
+--fp16xfc
 ```
 
-#### LF-AmazonTitles-3M
+LF-AmazonTitles-3M
 
 
-#### LF-WikiSeeAlso-320K
+LF-WikiSeeAlso-320K
 ```bash
 python main.py \
 --epochs 100 \
@@ -120,11 +119,10 @@ python main.py \
 --dropout 0.75 \
 --wd1 1e-4 \
 --noloss \
---fp16xfc \
---expname debug
+--fp16xfc
 ```
 
-#### LF-Amazon-131K
+LF-Amazon-131K
 
 
 
