@@ -55,7 +55,7 @@ Above command will create a folder named `xc/Datasets/LF-AmazonTitles-131K-Aug`,
 
 ## Training
 
-Train Renee on LF-AmazonTitles-131K dataset using label-text augmentation, you can use the following command (make sure you modify `data-dir`, `use-ngame-encoder` accordingly; keep in mind that you need to generate label-text augmentation dataset folder first, refer to Data Preparation section of README)
+Train Renee on LF-AmazonTitles-131K dataset using label-text augmentation, you can use the following command (make sure you modify `data-dir`, `use-ngame-encoder`, `expname` arguments accordingly; also keep in mind that you need to generate label-text augmentation dataset folder first, refer to Data Preparation section of README)
 ```bash
 python main.py \
 --epochs 100 \
