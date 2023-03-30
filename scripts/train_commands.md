@@ -28,7 +28,7 @@ python main.py \
 python main.py \
 --epochs 70 \
 --batch-size 16 \
---lr1 0.001 \
+--lr1 0.01 \
 --lr2 4e-5 \
 --warmup 10000 \
 --data-dir xc/Datasets/Amazon-670K \
@@ -42,6 +42,23 @@ python main.py \
 ```
 
 #### AmazonTitles-3M
+```bash
+python main.py \
+--epochs 70 \
+--batch-size 16 \
+--lr1 0.01 \
+--lr2 5e-5 \
+--warmup 10000 \
+--data-dir ~/xc/Datasets/AmazonTitles-3M \
+--maxlen 32 \
+--tf sentence-transformers/all-roberta-large-v1 \
+--dropout 0.75 \
+--wd1 0.001 \
+--noloss \
+--fp16xfc \
+--expname rpr_mg-5
+```
+
 
 #### Amazon-3M
 
@@ -74,14 +91,14 @@ python main.py \
 --lr1 0.05 \
 --lr2 1e-5 \
 --warmup 5000 \
---data-dir xc/Datasets/LF-AmazonTitles-131K-Aug \
+--data-dir ~/xc/Datasets/LF-AmazonTitles-131K-Aug \
 --maxlen 32 \
 --tf sentence-transformers/msmarco-distilbert-base-v4 \
 --dropout 0.85 \
 --wd1 1e-4 \
 --noloss \
 --fp16xfc \
---use-ngame-encoder ngame_pretrained_models/LF-AmazonTitles-131K/state_dict.pt \
+--use-ngame-encoder ngame_pretrained_models/LF-AmazonTitles-131K-Aug/state_dict.pt \
 --expname debug
 ```
 
