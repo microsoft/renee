@@ -196,7 +196,7 @@ def main():
                         help='input per GPU batch size for training (default: 8)')
     parser.add_argument('--epochs', type=int, default=50, metavar='N',
                         help='number of epochs to train (default: 50)')
-    parser.add_argument('--expname', type=str, default='debug', metavar='N',
+    parser.add_argument('--expname', type=str, default='renee-exp', metavar='N',
                         help='Name of exp')
     parser.add_argument('--device', type=int, default=None, metavar='N',
                         help='Single device training (default: None)')
