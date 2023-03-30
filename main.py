@@ -178,7 +178,8 @@ def start(device, ngpus_per_node, args):
           tf_optimizer_params= {'lr': args.lr2, 'eps': 1e-06, 'set_grad_none': True, 'bias_correction': True, 'weight_decay': args.wd2},
           epochs = args.epochs, warmup_steps = args.warmup,
           evaluator=evaluator,
-          evaluation_epochs=1)
+          evaluation_epochs=5,
+          max_grad_norm=5.0)
 
 def main():
     # Training settings
