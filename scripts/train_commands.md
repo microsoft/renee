@@ -40,10 +40,10 @@ python main.py \
 --dropout 0.8 \
 --wd1 0.001 \
 --noloss \
---fp16xfc
+--fp16xfc \
 ```
 
-#### AmazonTitles-3M
+AmazonTitles-3M
 ```bash
 python main.py \
 --epochs 70 \
@@ -62,6 +62,22 @@ python main.py \
 ```
 
 Amazon-3M
+```bash
+python main.py \
+--epochs 60 \
+--batch-size 16 \
+--lr1 0.01 \
+--lr2 4e-5 \
+--warmup 10000 \
+--data-dir ~/xc/Datasets/Amazon-3M \
+--maxlen 256 \
+--tf sentence-transformers/all-roberta-large-v1 \
+--dropout 0.75 \
+--wd1 0.001 \
+--noloss \
+--fp16xfc \
+--expname debug
+```
 
 Wiki-500K
 ```bash
@@ -69,15 +85,16 @@ python main.py \
 --epochs 100 \
 --batch-size 128 \
 --lr1 0.002 \
---lr2 2e-4 \
+--lr2 1e-4 \
 --warmup 5000 \
---data-dir xc/Datasets/Wiki-500K \
+--data-dir ~/xc/Datasets/Wiki-500K \
 --maxlen 256 \
 --tf sentence-transformers/paraphrase-distilroberta-base-v2 \
 --dropout 0.75 \
 --wd1 0.001 \
 --noloss \
---fp16xfc
+--fp16xfc \
+--expname debug
 ```
 
 
@@ -120,6 +137,23 @@ python main.py \
 ```
 
 LF-AmazonTitles-3M
+```bash
+python main.py \
+--epochs 100 \
+--batch-size 64 \
+--lr1 0.01 \
+--lr2 1e-6 \
+--warmup 15000 \
+--data-dir ~/xc/Datasets/LF-AmazonTitles-1.3M-Aug \
+--maxlen 32 \
+--tf sentence-transformers/msmarco-distilbert-base-v4 \
+--dropout 0.7 \
+--wd1 1e-4 \
+--noloss \
+--fp16xfc \
+--use-ngame-encoder ngame_pretrained_models/LF-AmazonTitles-1.3M-Aug/state_dict.pt \
+--expname debug
+```
 
 
 LF-WikiSeeAlso-320K
@@ -136,7 +170,8 @@ python main.py \
 --dropout 0.75 \
 --wd1 1e-4 \
 --noloss \
---fp16xfc
+--fp16xfc \
+--expname debug
 ```
 
 LF-Amazon-131K
