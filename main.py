@@ -152,10 +152,13 @@ def start(device, ngpus_per_node, args):
     args.bottleneck_dims = encoder.transformer.config.hidden_size
 
   model = GenericModel(my_rank, args, trn_X_Y.shape[1], numy_per_gpu, args.batch_size, modules, device=device, name=expname, out_dir=f'{results_dir}/{dataset}/{expname}')
+  if args.compile:
+      model.embed[0] = torch.compile(model.embed[0])
   model = model.cuda()
   #model.load()
 
-  model.embed = DDP(model.embed, device_ids=[my_rank%ngpus_per_node])
+  if args.world_size>1:
+      model.embed = DDP(model.embed, device_ids=[my_rank%ngpus_per_node])
 
   if args.default_impl:
       trn_loss = BCELossMultiNodeDefault(model)
@@ -179,7 +182,8 @@ def start(device, ngpus_per_node, args):
           epochs = args.epochs, warmup_steps = args.warmup,
           evaluator=evaluator,
           evaluation_epochs=5,
-          max_grad_norm=5.0)
+#           max_grad_norm=5.0)
+          )
 
 def main():
     # Training settings
@@ -246,6 +250,8 @@ def main():
 #                         help='Use NGAME pretrained encoder as initialization point for trainings')
     parser.add_argument('--use-ngame-encoder', type=str, default='',
                         help='Path to NGAME pretrained encoder as initialization point for trainings')
+    parser.add_argument('--compile', action='store_true', default=False,
+                        help='Compile model using PyTorch 2.0')
     args = parser.parse_args()
 
     print(args)

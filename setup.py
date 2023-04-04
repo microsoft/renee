@@ -6,8 +6,8 @@ setup(
     name='xfc_gemm',
     ext_modules=[
         CUDAExtension('xfc_gemm_cuda', [
-            'renee_gemm.cpp',
-            'renee_gemm_kernel.cu',
+            'xfc_gemm.cpp',
+            'xfc_gemm_kernel.cu',
         ],
 #         include_dirs=['./include','./tools/util/include'],
         include_dirs=[f'{os.getcwd()}/cutlass/include',f'{os.getcwd()}/cutlass/tools/util/include'],

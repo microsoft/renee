@@ -68,8 +68,10 @@ def _filter(score_mat, filter_mat, copy=True):
 
 def bert_fts_batch_to_tensor(input_ids, attention_mask):
     maxlen = attention_mask.sum(axis=1).max()
-    return {'input_ids': torch.from_numpy(input_ids[:, :maxlen]), 
-            'attention_mask': torch.from_numpy(attention_mask[:, :maxlen])}
+#     return {'input_ids': torch.from_numpy(input_ids[:, :maxlen]), 
+#             'attention_mask': torch.from_numpy(attention_mask[:, :maxlen])}
+    return {'input_ids': torch.from_numpy(input_ids), 
+            'attention_mask': torch.from_numpy(attention_mask)}
     #return {'input_ids': torch.from_numpy(input_ids), 
     #        'attention_mask': torch.from_numpy(attention_mask)}
 
@@ -280,7 +282,8 @@ class GenericModel(nn.Sequential):
                     loss = self.default_loss(out, batch_data['yfull'])
                     loss.backward()
                     total_loss += loss/(bsz*self.padded_numy)                       
-                    if grad_accum % 1 == 0:
+#                     if grad_accum % 1 == 0:
+                    if grad_accum % self.accum == 0:
                      grad_accum = 0
                      self.xfc_optimizer.step()
                      self.xfc_optimizer.zero_grad()
@@ -299,6 +302,7 @@ class GenericModel(nn.Sequential):
                 # xfc layer custom forward and backward performed with no_grad
                 with torch.no_grad():
                     embed_out = loss_model.gather_embed(embed, batch_data)
+                    
 
                     bsz = batch_data['batch_size']
                     pos_x_y = batch_data['z']
