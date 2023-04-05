@@ -78,6 +78,11 @@ To change hyperparameters, you can refer to the various arguments provided in `m
 
 Training commands for other datasets are provided in `scripts/train_commands.md`.
 
+## License
+
+This project is licensed under the [Microsoft Research License](https://github.com/microsoft/renee/blob/main/License.docx).
+
+
 ## Citation
 
 If you find our work/code useful in your research, please cite the following:
