@@ -2,6 +2,10 @@
 
 Official PyTorch implementation for the paper: "Renee: End-to-end training of extreme classification models" accepted at MLSys 2023.
 
+
+## DOI
+[![DOI](https://zenodo.org/badge/605004299.svg)](https://zenodo.org/badge/latestdoi/605004299)
+
 ## Abstract
 
 The goal of Extreme Multi-label Classification (XC) is to learn representations that enable mapping input texts to the most relevant subset of labels selected from an extremely large label set, potentially in hundreds of millions.
