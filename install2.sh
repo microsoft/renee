@@ -1,36 +1,32 @@
+# run below cmd first
+# conda activate renee
 
-#run below cmd first
-#conda activate rpr
-
-pip install torch==1.12.1+cu113 -f https://download.pytorch.org/whl/torch_stable.html
-
+conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia -y
 
 pip install transformers
 pip install scipy
-pip install threadpoolctl==2.0.0
+pip install numba
 pip install pandas
 pip install cython
-
-pip install seaborn sentence-transformer
-pip install --no-binary :all: nmslib
-pip install pybind11==2.6.1 fasttext sklearn cython numpy==1.20.3 scikit-learn
-
+pip install scikit-learn
+pip install sentence-transformers
+pip install seaborn
 
 git clone https://github.com/kunaldahiya/pyxclib
 cd pyxclib
-python3 setup.py install  
+pip install .
 cd ..
-
-pip install scikit-learn
+# rm -rf pyxclib
 
 ## Need only for apex optimizers
 git clone https://github.com/NVIDIA/apex
 cd apex
 pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./
 cd ..
+# rm -rf apex
 
 
 ## Need only for custom-cuda
-git clone https://github.com/NVIDIA/cutlass.git
-pip install cutlass
-python3 setup.py install
+# git clone https://github.com/NVIDIA/cutlass.git
+# pip install cutlass
+# python3 setup.py install
