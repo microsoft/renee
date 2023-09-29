@@ -41,8 +41,10 @@ python main.py \
 --tf sentence-transformers/all-roberta-large-v1 \
 --dropout 0.8 \
 --wd1 0.001 \
+--wd2 0.001 \
 --noloss \
 --fp16xfc \
+--compile
 ```
 
 AmazonTitles-3M
@@ -50,7 +52,7 @@ AmazonTitles-3M
 python main.py \
 --epochs 70 \
 --batch-size 16 \
---lr1 0.01 \
+--lr1 0.005 \
 --lr2 5e-5 \
 --warmup 10000 \
 --data-dir xc/Datasets/AmazonTitles-3M \
@@ -58,9 +60,10 @@ python main.py \
 --tf sentence-transformers/all-roberta-large-v1 \
 --dropout 0.75 \
 --wd1 0.001 \
+--wd1 0.002 \
 --noloss \
 --fp16xfc \
---expname rpr_mg-5
+--compile
 ```
 
 Amazon-3M
@@ -76,9 +79,10 @@ python main.py \
 --tf sentence-transformers/all-roberta-large-v1 \
 --dropout 0.75 \
 --wd1 0.001 \
+--wd2 0.001 \
 --noloss \
 --fp16xfc \
---expname debug
+--compile
 ```
 
 Wiki-500K
@@ -94,8 +98,10 @@ python main.py \
 --tf sentence-transformers/paraphrase-distilroberta-base-v2 \
 --dropout 0.75 \
 --wd1 0.001 \
+--wd2 0.001 \
 --noloss \
 --fp16xfc \
+--compile
 ```
 
 
